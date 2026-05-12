@@ -39,8 +39,14 @@ class Settings(BaseSettings):
     duplicate_window_hours: int = Field(default=48)
 
     # Storage
-    storage_backend: str = Field(default="local")
+    storage_backend: str = Field(default="local")  # "local" or "supabase"
     local_upload_dir: str = Field(default="./uploads")
+
+    # Supabase Storage (only required when storage_backend="supabase")
+    supabase_url: str = Field(default="")          # e.g. https://abcd1234.supabase.co
+    supabase_service_key: str = Field(default="")  # the "service_role" secret from API settings
+    supabase_bucket: str = Field(default="")       # e.g. arckscare-uploads
+    supabase_signed_url_ttl_seconds: int = Field(default=604800)  # 7 days
 
     @field_validator("cors_origins")
     @classmethod

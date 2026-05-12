@@ -10,6 +10,7 @@ of sending - this keeps `python -m uvicorn` runnable with zero setup.
 from __future__ import annotations
 
 import logging
+import os
 from email.message import EmailMessage
 from typing import Iterable, Optional
 
@@ -17,8 +18,21 @@ import aiosmtplib
 
 from ..config import get_settings
 from ..models.ticket import Ticket
+from .storage import get_storage
 
 logger = logging.getLogger("arckscare.email")
+
+
+def _absolute_attachment_url(url: str) -> str:
+    """Convert /uploads/... relative URLs into absolute ones for the email body.
+
+    Falls back to the local dev URL; in prod, set ARCKSCARE_PUBLIC_URL env to
+    your real domain so links work outside your machine.
+    """
+    if url.startswith("http"):
+        return url
+    base = os.environ.get("ARCKSCARE_PUBLIC_URL", "http://localhost:8000").rstrip("/")
+    return f"{base}{url}"
 
 
 def _format_html(ticket: Ticket, support_url_base: Optional[str] = None) -> str:
@@ -31,12 +45,18 @@ def _format_html(ticket: Ticket, support_url_base: Optional[str] = None) -> str:
 
     attachments_html = ""
     if ticket.attachments:
+        storage = get_storage()
         items = "".join(
-            f'<li><a href="{a.storage_url}" style="color:#0A0A0A;">{a.filename}</a> '
-            f"({a.size_bytes // 1024} KB)</li>"
+            f'<li style="margin:4px 0;"><a href="{_absolute_attachment_url(storage.public_url(a.storage_url))}" '
+            f'style="color:#0A0A0A;text-decoration:underline;">{a.filename}</a> '
+            f'<span style="color:#737373;">&middot; {a.size_bytes // 1024} KB &middot; {a.content_type}</span></li>'
             for a in ticket.attachments
         )
-        attachments_html = f"<h3 style='margin-top:24px'>Attachments</h3><ul>{items}</ul>"
+        attachments_html = (
+            f"<h3 style='margin:24px 0 8px;font-size:13px;text-transform:uppercase;"
+            f"letter-spacing:0.06em;color:#737373;'>Attachments ({len(ticket.attachments)})</h3>"
+            f"<ul style='margin:0;padding-left:20px;'>{items}</ul>"
+        )
 
     return f"""
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;

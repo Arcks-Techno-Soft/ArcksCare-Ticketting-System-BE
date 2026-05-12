@@ -6,9 +6,11 @@ Run locally with:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
 from .database import Base, engine
@@ -39,6 +41,12 @@ app.add_middleware(
 )
 
 app.include_router(tickets_router.router)
+
+# Serve uploaded files at /uploads/<ticket_ref>/<filename>.
+# The directory is created lazily on first upload; ensure it exists for the mount.
+_uploads_dir = Path(settings.local_upload_dir)
+_uploads_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploads")
 
 
 @app.on_event("startup")

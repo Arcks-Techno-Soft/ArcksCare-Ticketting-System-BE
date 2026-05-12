@@ -116,6 +116,23 @@ class AttachmentOut(BaseModel):
     content_type: str
     size_bytes: int
 
+    @field_validator("storage_url", mode="after")
+    @classmethod
+    def _resolve_storage_url(cls, v: str) -> str:
+        """Turn the raw stored value (URL path or object key) into a viewable URL.
+
+        For local storage this is a no-op (the stored value is already a path).
+        For Supabase, this mints a fresh signed URL each time the response is
+        serialized.
+        """
+        # Import here to avoid a circular dependency at module load.
+        from ..services.storage import get_storage  # noqa: WPS433
+
+        try:
+            return get_storage().public_url(v)
+        except Exception:
+            return v  # fall back to raw value rather than crashing
+
 
 class TicketResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
