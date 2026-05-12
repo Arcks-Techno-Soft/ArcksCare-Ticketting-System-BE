@@ -1,0 +1,14 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.db
+*.sqlite
+*.sqlite3
+arckscare.db
+uploads/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
