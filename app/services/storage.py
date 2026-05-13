@@ -69,12 +69,12 @@ class Storage(abc.ABC):
 
     @abc.abstractmethod
     def save(self, file: UploadFile, ticket_reference: str, filename: str) -> dict:
-        """Save a single file. Returns metadata for TicketAttachment.
+        """Save a single file. Returns metadata for TicketAttachment."""
+        ...
 
-        The `storage_url` field of the returned dict is opaque to the rest of
-        the app — it's whatever this backend needs to recover the file. The
-        backend's `public_url()` method turns it back into a viewable link.
-        """
+    @abc.abstractmethod
+    def save_bytes(self, content: bytes, content_type: str, ticket_reference: str, filename: str) -> dict:
+        """Save raw bytes (e.g. a signature PNG or generated PDF)."""
         ...
 
     @abc.abstractmethod
@@ -124,6 +124,25 @@ class LocalStorage(Storage):
             "content_type": file.content_type or "application/octet-stream",
             "size_bytes": size,
             "storage_url": f"{LOCAL_URL_PREFIX}/{ticket_reference}/{dest.name}",
+        }
+
+    def save_bytes(self, content: bytes, content_type: str, ticket_reference: str, filename: str) -> dict:
+        settings = get_settings()
+        base = Path(settings.local_upload_dir) / ticket_reference
+        base.mkdir(parents=True, exist_ok=True)
+        dest = base / filename
+        size = len(content)
+        if size > MAX_FILE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"File too large: {filename} (max 50 MB)",
+            )
+        dest.write_bytes(content)
+        return {
+            "filename": filename,
+            "content_type": content_type,
+            "size_bytes": size,
+            "storage_url": f"{LOCAL_URL_PREFIX}/{ticket_reference}/{filename}",
         }
 
     def public_url(self, stored: str) -> str:
@@ -206,6 +225,44 @@ class SupabaseStorage(Storage):
             "content_type": file.content_type or "application/octet-stream",
             "size_bytes": size,
             "storage_url": key,  # We store the object key; signed URL is minted on demand.
+        }
+
+    def save_bytes(self, content: bytes, content_type: str, ticket_reference: str, filename: str) -> dict:
+        size = len(content)
+        if size > MAX_FILE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"File too large: {filename} (max 50 MB)",
+            )
+        key = f"{ticket_reference}/{filename}"
+        upload_url = f"{self.url}/storage/v1/object/{self.bucket}/{key}"
+        try:
+            resp = httpx.post(
+                upload_url,
+                headers={
+                    **self._auth_headers(),
+                    "Content-Type": content_type,
+                    "x-upsert": "true",
+                },
+                content=content,
+                timeout=60.0,
+            )
+        except httpx.HTTPError as e:
+            logger.exception("Supabase upload network error")
+            raise HTTPException(status_code=502, detail=f"Storage upload failed: {e}")
+
+        if resp.status_code >= 400:
+            logger.error("Supabase upload failed: %s %s", resp.status_code, resp.text[:300])
+            raise HTTPException(
+                status_code=502,
+                detail=f"Supabase upload failed ({resp.status_code}).",
+            )
+
+        return {
+            "filename": filename,
+            "content_type": content_type,
+            "size_bytes": size,
+            "storage_url": key,
         }
 
     def public_url(self, stored_key: str) -> str:

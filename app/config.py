@@ -48,6 +48,23 @@ class Settings(BaseSettings):
     supabase_bucket: str = Field(default="")       # e.g. arckscare-uploads
     supabase_signed_url_ttl_seconds: int = Field(default=604800)  # 7 days
 
+    # Auth
+    jwt_secret: str = Field(default="change-me-in-production-this-must-be-a-long-random-string")
+    jwt_algorithm: str = Field(default="HS256")
+    jwt_expires_hours: int = Field(default=24)
+
+    # Seed users (created on first boot if `users` table is empty)
+    seed_owner_username: str = Field(default="owner")
+    seed_owner_password: str = Field(default="owner123")
+    seed_owner_name: str = Field(default="Owner")
+    seed_manager_username: str = Field(default="admin")
+    seed_manager_password: str = Field(default="admin123")
+    seed_manager_name: str = Field(default="Manager")
+
+    # Customer signing
+    customer_sign_url_base: str = Field(default="http://localhost:3000")
+    customer_sign_token_ttl_days: int = Field(default=30)
+
     @field_validator("cors_origins")
     @classmethod
     def _strip_origins(cls, v: str) -> str:

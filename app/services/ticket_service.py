@@ -12,10 +12,14 @@ from ..models.ticket import Ticket, TicketStatus
 from ..schemas.ticket import TicketCreate
 from ..utils.ticket_id import make_reference
 
+# Any not-yet-resolved status. New submissions for the same serial are blocked
+# while one of these exists within the dedup window.
 OPEN_STATUSES = (
-    TicketStatus.NEW.value,
+    TicketStatus.OPEN.value,
+    TicketStatus.ACKNOWLEDGED.value,
     TicketStatus.ASSIGNED.value,
-    TicketStatus.IN_PROGRESS.value,
+    TicketStatus.ACCEPTED.value,
+    TicketStatus.RESOLVING.value,
 )
 
 
@@ -63,7 +67,7 @@ def create_ticket(db: Session, payload: TicketCreate) -> Ticket:
         severity=payload.severity.value,
         description=payload.description.strip(),
         preferred_contact_time=(payload.preferred_contact_time or "").strip() or None,
-        status=TicketStatus.NEW.value,
+        status=TicketStatus.OPEN.value,
         reference="PENDING",  # placeholder, replaced below
     )
     db.add(ticket)

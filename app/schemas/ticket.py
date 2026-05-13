@@ -9,6 +9,8 @@ from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
+from .auth import UserOut
+
 
 class BusinessType(str, Enum):
     RESTAURANT = "Restaurant"
@@ -156,8 +158,41 @@ class TicketResponse(BaseModel):
     issue_category: str
     severity: str
     status: str
+    warranty_status: str
+
+    # Assignment context (Phase 2.2+) - nested user objects via the ORM relationship.
+    acknowledged_by: Optional[UserOut] = None
+    acknowledged_at: Optional[datetime] = None
+    assigned_by: Optional[UserOut] = None
+    assigned_engineer: Optional[UserOut] = None
+    assigned_at: Optional[datetime] = None
+
+    # Resolution context (Phase 2.3+)
+    accepted_at: Optional[datetime] = None
+    resolving_started_at: Optional[datetime] = None
+    resolved_at: Optional[datetime] = None
+    resolution_summary: Optional[str] = None
+
+    # Signing + PDF (Phase 2.4+) — only ever populated once resolve() runs.
+    resolution: Optional["ResolutionOut"] = None
+
     created_at: datetime
     attachments: List[AttachmentOut] = []
+
+
+class ResolutionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    customer_signer_name: Optional[str] = None
+    customer_signed_at: Optional[datetime] = None
+    engineer_signed_at: Optional[datetime] = None
+    pdf_generated_at: Optional[datetime] = None
+    # Signing URL for support staff to share with the customer if needed.
+    customer_sign_token: str
+
+# Update forward ref after class definition.
+TicketResponse.model_rebuild()
 
 
 class TicketDuplicateResponse(BaseModel):

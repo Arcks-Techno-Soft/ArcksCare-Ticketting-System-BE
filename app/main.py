@@ -13,7 +13,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
-from .database import Base, engine
+from .database import Base, SessionLocal, engine
+from .routers import admin as admin_router
+from .routers import auth as auth_router
+from .routers import sign as sign_router
 from .routers import tickets as tickets_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -41,6 +44,9 @@ app.add_middleware(
 )
 
 app.include_router(tickets_router.router)
+app.include_router(auth_router.router)
+app.include_router(admin_router.router)
+app.include_router(sign_router.router)
 
 # Serve uploaded files at /uploads/<ticket_ref>/<filename>.
 # The directory is created lazily on first upload; ensure it exists for the mount.
@@ -51,16 +57,21 @@ app.mount("/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploads")
 
 @app.on_event("startup")
 def _bootstrap_db() -> None:
-    """Auto-create tables for SQLite dev mode.
+    """Auto-create tables on first boot + seed the initial owner/manager users.
 
-    In production (Postgres), use Alembic migrations instead. This block is a
-    no-op once tables exist.
+    In production, use Alembic migrations instead. This block is idempotent —
+    no-op once tables and seed users exist.
     """
     # Import models so SQLAlchemy registers them on Base.metadata.
     from .models import ticket as _t  # noqa: F401
+    from .models import user as _u  # noqa: F401
+    from .services.auth import seed_initial_users
 
     Base.metadata.create_all(bind=engine)
     logger.info("Database ready: %s", settings.database_url.split("@")[-1])
+
+    with SessionLocal() as db:
+        seed_initial_users(db)
 
 
 @app.get("/")

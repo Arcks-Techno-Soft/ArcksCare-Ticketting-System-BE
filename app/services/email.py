@@ -187,3 +187,163 @@ async def send_ticket_notification(ticket: Ticket, to: Optional[Iterable[str]] =
     except Exception as exc:  # noqa: BLE001 - email is best-effort
         logger.exception("Failed to send ticket notification for %s: %s", ticket.reference, exc)
         return False
+
+
+# --------------------------------------------------------------------------- #
+# Engineer assignment notification                                            #
+# --------------------------------------------------------------------------- #
+
+async def send_customer_sign_request(ticket: Ticket, sign_url: str) -> bool:
+    """Email the customer asking them to open the signing page and sign off
+    on the resolution. Failure to send is logged but never crashes the request."""
+    settings = get_settings()
+    if not settings.smtp_user or not settings.smtp_password:
+        logger.warning(
+            "SMTP not configured. Would have emailed %s to sign %s at %s",
+            ticket.email, ticket.reference, sign_url,
+        )
+        return False
+
+    msg = EmailMessage()
+    msg["From"] = f"{settings.smtp_from_name} <{settings.smtp_from_email or settings.smtp_user}>"
+    msg["To"] = ticket.email
+    msg["Cc"] = settings.support_inbox
+    msg["Subject"] = f"Please confirm resolution — {ticket.reference}"
+
+    text = (
+        f"Hi {ticket.contact_name},\n\n"
+        f"Our engineer has marked ticket {ticket.reference} as resolved.\n\n"
+        f"Please confirm by reviewing the resolution and signing here:\n"
+        f"  {sign_url}\n\n"
+        f"This link is valid for {settings.customer_sign_token_ttl_days} days.\n\n"
+        f"— ArcksCare"
+    )
+    msg.set_content(text)
+
+    html = f"""
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+                max-width:560px;margin:0 auto;color:#0A0A0A;background:#FFFFFF;
+                padding:32px;border:1px solid #E5E5E5;border-radius:12px;">
+      <p style="margin:0 0 6px;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;color:#737373;">
+        Action required
+      </p>
+      <h1 style="margin:0 0 14px;font-size:22px;letter-spacing:-0.01em;">
+        Please confirm your device is fixed
+      </h1>
+      <p style="margin:0 0 18px;color:#525252;">Hi {ticket.contact_name},</p>
+      <p style="margin:0 0 14px;color:#525252;">
+        Our engineer has resolved ticket <strong>{ticket.reference}</strong> on your
+        {ticket.product_category} (serial {ticket.serial_number}). Please open the
+        resolution document below, review it, and sign to confirm.
+      </p>
+      <p style="margin:24px 0;">
+        <a href="{sign_url}"
+           style="display:inline-block;background:#0A0A0A;color:#FFFFFF;
+                  padding:12px 22px;border-radius:10px;text-decoration:none;
+                  font-weight:500;font-size:14px;">
+          Open &amp; sign resolution document &rarr;
+        </a>
+      </p>
+      <p style="margin:0 0 6px;color:#525252;font-size:13px;">
+        Link valid for {settings.customer_sign_token_ttl_days} days.
+      </p>
+      <hr style="border:none;border-top:1px solid #E5E5E5;margin:24px 0;" />
+      <p style="margin:0;color:#737373;font-size:12px;">
+        If the link doesn&rsquo;t work, copy this URL into your browser:<br/>
+        <span style="word-break:break-all;">{sign_url}</span>
+      </p>
+    </div>
+    """
+    msg.add_alternative(html, subtype="html")
+
+    try:
+        await aiosmtplib.send(
+            msg,
+            hostname=settings.smtp_host,
+            port=settings.smtp_port,
+            username=settings.smtp_user,
+            password=settings.smtp_password,
+            start_tls=True,
+            timeout=15,
+        )
+        logger.info("Sent customer signing request for %s to %s", ticket.reference, ticket.email)
+        return True
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to send customer signing request for %s", ticket.reference)
+        return False
+
+
+async def send_engineer_assignment(ticket: Ticket, engineer, assigned_by) -> bool:
+    """Notify the engineer that a ticket has been assigned to them.
+
+    Falls back to logging if SMTP isn't configured (dev mode) or the engineer
+    has no email on file. Failures never block the API response.
+    """
+    settings = get_settings()
+    recipient = getattr(engineer, "email", None) or settings.support_inbox
+    if not settings.smtp_user or not settings.smtp_password:
+        logger.warning(
+            "SMTP not configured. Would notify %s (%s) about assignment of %s",
+            engineer.name, recipient, ticket.reference,
+        )
+        return False
+
+    msg = EmailMessage()
+    msg["From"] = f"{settings.smtp_from_name} <{settings.smtp_from_email or settings.smtp_user}>"
+    msg["To"] = recipient
+    # CC the support inbox so the team has a record.
+    if recipient != settings.support_inbox:
+        msg["Cc"] = settings.support_inbox
+    msg["Subject"] = f"[Assignment] {ticket.reference} — {ticket.issue_category} ({ticket.product_category})"
+
+    body_text = (
+        f"Hi {engineer.name},\n\n"
+        f"You've been assigned ticket {ticket.reference} by {assigned_by.name}.\n\n"
+        f"  Customer: {ticket.business_name} ({ticket.business_type})\n"
+        f"  Contact:  {ticket.contact_name} — {ticket.phone}\n"
+        f"  Product:  {ticket.product_category} (serial {ticket.serial_number})\n"
+        f"  Issue:    {ticket.issue_category} — severity {ticket.severity}\n\n"
+        f"Description:\n{ticket.description}\n\n"
+        f"Open the ticket in the admin app to accept and start working."
+    )
+    msg.set_content(body_text)
+
+    html = f"""
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+                max-width:560px;margin:0 auto;color:#0A0A0A;background:#FFFFFF;
+                padding:28px;border:1px solid #E5E5E5;border-radius:12px;">
+      <p style="margin:0 0 6px;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;color:#737373;">
+        New assignment
+      </p>
+      <h1 style="margin:0 0 18px;font-size:20px;letter-spacing:-0.01em;">
+        {ticket.reference} &middot; {ticket.issue_category}
+      </h1>
+      <p style="margin:0 0 16px;color:#525252;">Hi {engineer.name}, {assigned_by.name} has assigned this ticket to you.</p>
+      <table style="width:100%;border-collapse:collapse;font-size:14px;">
+        <tr><td style="padding:6px 0;color:#737373;">Customer</td><td style="padding:6px 0;"><strong>{ticket.business_name}</strong> &middot; {ticket.business_type}</td></tr>
+        <tr><td style="padding:6px 0;color:#737373;">Contact</td><td style="padding:6px 0;">{ticket.contact_name} &middot; {ticket.phone}</td></tr>
+        <tr><td style="padding:6px 0;color:#737373;">Product</td><td style="padding:6px 0;">{ticket.product_category} <span style="color:#737373;">(serial {ticket.serial_number})</span></td></tr>
+        <tr><td style="padding:6px 0;color:#737373;">Severity</td><td style="padding:6px 0;">{ticket.severity}</td></tr>
+      </table>
+      <h3 style="margin:20px 0 6px;font-size:13px;text-transform:uppercase;letter-spacing:0.06em;color:#737373;">Description</h3>
+      <p style="margin:0;white-space:pre-wrap;line-height:1.55;">{ticket.description}</p>
+      <p style="margin:24px 0 0;color:#737373;font-size:12px;">Open the admin app to accept and start working.</p>
+    </div>
+    """
+    msg.add_alternative(html, subtype="html")
+
+    try:
+        await aiosmtplib.send(
+            msg,
+            hostname=settings.smtp_host,
+            port=settings.smtp_port,
+            username=settings.smtp_user,
+            password=settings.smtp_password,
+            start_tls=True,
+            timeout=15,
+        )
+        logger.info("Notified engineer %s about %s", engineer.username, ticket.reference)
+        return True
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to notify engineer %s about %s", engineer.username, ticket.reference)
+        return False

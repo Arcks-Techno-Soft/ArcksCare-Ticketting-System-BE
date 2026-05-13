@@ -9,18 +9,20 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Optional
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..database import Base
 
 
 class TicketStatus(str, Enum):
-    NEW = "NEW"
-    ASSIGNED = "ASSIGNED"
-    IN_PROGRESS = "IN_PROGRESS"
-    RESOLVED = "RESOLVED"
-    CLOSED = "CLOSED"
+    OPEN = "OPEN"
+    ACKNOWLEDGED = "ACKNOWLEDGED"  # Manager/Owner has seen and triaged it
+    ASSIGNED = "ASSIGNED"          # Manager/Owner assigned an engineer
+    ACCEPTED = "ACCEPTED"          # Engineer accepted the assignment (separate click)
+    RESOLVING = "RESOLVING"        # Engineer actively working
+    RESOLVED = "RESOLVED"          # Engineer marked done; awaiting signatures + PDF
+    CLOSED = "CLOSED"              # Final state - signed off and archived
 
 
 class Severity(str, Enum):
@@ -28,6 +30,12 @@ class Severity(str, Enum):
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
     CRITICAL = "CRITICAL"
+
+
+class WarrantyStatus(str, Enum):
+    UNKNOWN = "UNKNOWN"              # Default at intake; Owner sets this later
+    UNDER_WARRANTY = "UNDER_WARRANTY"
+    OUT_OF_WARRANTY = "OUT_OF_WARRANTY"
 
 
 class Ticket(Base):
@@ -67,16 +75,98 @@ class Ticket(Base):
     preferred_contact_time: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
 
     # Workflow
-    status: Mapped[str] = mapped_column(String(20), default=TicketStatus.NEW.value, index=True)
+    status: Mapped[str] = mapped_column(String(20), default=TicketStatus.OPEN.value, index=True)
+    # Owner sets this after triage; defaults to UNKNOWN at intake.
+    warranty_status: Mapped[str] = mapped_column(
+        String(20), default=WarrantyStatus.UNKNOWN.value, index=True
+    )
+
+    # Assignment (Phase 2.2+)
+    acknowledged_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    acknowledged_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    assigned_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    assigned_engineer_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    assigned_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    accepted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolving_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Engineer's written resolution summary (filled when status goes RESOLVING→RESOLVED).
+    resolution_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     attachments: Mapped[List["TicketAttachment"]] = relationship(
         back_populates="ticket", cascade="all, delete-orphan"
     )
+    work_notes: Mapped[List["WorkNote"]] = relationship(
+        back_populates="ticket",
+        cascade="all, delete-orphan",
+        order_by="WorkNote.created_at",
+    )
+    resolution: Mapped[Optional["Resolution"]] = relationship(
+        back_populates="ticket", cascade="all, delete-orphan", uselist=False
+    )
+    events: Mapped[List["TicketEvent"]] = relationship(
+        back_populates="ticket",
+        cascade="all, delete-orphan",
+        order_by="TicketEvent.created_at",
+    )
+    # The engineer / manager / owner who took these actions. Lazy-loaded.
+    acknowledged_by: Mapped[Optional["User"]] = relationship(
+        foreign_keys=[acknowledged_by_id], lazy="joined"
+    )
+    assigned_by: Mapped[Optional["User"]] = relationship(
+        foreign_keys=[assigned_by_id], lazy="joined"
+    )
+    assigned_engineer: Mapped[Optional["User"]] = relationship(
+        foreign_keys=[assigned_engineer_id], lazy="joined"
+    )
+
+
+class TicketEvent(Base):
+    """Audit log of every meaningful state change on a ticket."""
+
+    __tablename__ = "ticket_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ticket_id: Mapped[int] = mapped_column(ForeignKey("tickets.id", ondelete="CASCADE"), index=True)
+    actor_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(40), index=True)
+    from_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    to_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    payload: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+    ticket: Mapped["Ticket"] = relationship(back_populates="events")
+    actor: Mapped[Optional["User"]] = relationship(lazy="joined")
+
+
+class WorkNote(Base):
+    """Internal engineer notes recorded while resolving a ticket.
+
+    Phase 2.3: notes are visible to all staff (Owner / Manager / Engineer)
+    but only the assigned engineer can add new ones. They're internal-only —
+    customers do NOT see these.
+    """
+
+    __tablename__ = "work_notes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ticket_id: Mapped[int] = mapped_column(ForeignKey("tickets.id", ondelete="CASCADE"), index=True)
+    author_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+    ticket: Mapped["Ticket"] = relationship(back_populates="work_notes")
+    author: Mapped["User"] = relationship(lazy="joined")
 
 
 class TicketAttachment(Base):
@@ -91,3 +181,7 @@ class TicketAttachment(Base):
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     ticket: Mapped["Ticket"] = relationship(back_populates="attachments")
+
+
+# Type-only import to make forward references resolve cleanly.
+from .user import User  # noqa: E402,F401

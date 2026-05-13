@@ -1,0 +1,159 @@
+"""Authentication service - bcrypt password hashing + JWT issue/verify.
+
+The login flow:
+  1. POST /api/v1/auth/login {username, password}
+  2. Service verifies bcrypt hash, issues short-lived JWT
+  3. Client stores JWT in localStorage, sends as `Authorization: Bearer <jwt>`
+  4. `get_current_user` dependency on /api/v1/admin/* routes validates JWT
+     and loads the User row from the DB.
+"""
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+import bcrypt
+import jwt
+from fastapi import Depends, Header, HTTPException, status
+from sqlalchemy.orm import Session
+
+from ..config import get_settings
+from ..database import get_db
+from ..models.user import User, UserRole
+
+logger = logging.getLogger("arckscare.auth")
+
+
+# ----------------------------- password hashing -------------------------- #
+
+def hash_password(plain: str) -> str:
+    """Return a bcrypt hash for storage. Slow on purpose."""
+    salt = bcrypt.gensalt(rounds=12)
+    return bcrypt.hashpw(plain.encode("utf-8"), salt).decode("utf-8")
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
+
+
+# ----------------------------- JWT ---------------------------------------- #
+
+def issue_token(user: User) -> tuple[str, datetime]:
+    """Return (jwt_token, expires_at). Expiry comes from config."""
+    settings = get_settings()
+    now = datetime.now(timezone.utc)
+    exp = now + timedelta(hours=settings.jwt_expires_hours)
+    payload = {
+        "sub": str(user.id),
+        "uname": user.username,
+        "role": user.role,
+        "iat": int(now.timestamp()),
+        "exp": int(exp.timestamp()),
+    }
+    token = jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    return token, exp
+
+
+def decode_token(token: str) -> dict:
+    settings = get_settings()
+    try:
+        return jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+# ----------------------------- FastAPI dependency ------------------------ #
+
+def get_current_user(
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+) -> User:
+    """Resolve the authenticated User from the Authorization header.
+
+    Returns 401 if the header is missing, malformed, expired, or the user has
+    been deactivated.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid Authorization header",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = authorization.split(" ", 1)[1].strip()
+    payload = decode_token(token)
+
+    user_id = int(payload.get("sub", 0))
+    user = db.query(User).filter(User.id == user_id).one_or_none()
+    if user is None or not user.active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or deactivated",
+        )
+    return user
+
+
+def require_role(*allowed: UserRole):
+    """Dependency factory: only lets through users whose role is in `allowed`."""
+    allowed_values = {r.value for r in allowed}
+
+    def _checker(user: User = Depends(get_current_user)) -> User:
+        if user.role not in allowed_values:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"This action requires one of: {sorted(allowed_values)}",
+            )
+        return user
+
+    return _checker
+
+
+# ----------------------------- Seed first-boot users --------------------- #
+
+def seed_initial_users(db: Session) -> None:
+    """If the users table is empty, create the configured seed accounts.
+
+    This makes local dev painless: boot the app, log in immediately as
+    owner/admin without any manual SQL. In production you'd run a one-shot
+    script and never ship default passwords.
+    """
+    if db.query(User).count() > 0:
+        return
+
+    settings = get_settings()
+    seeds = [
+        # Owner + manager from env vars
+        (settings.seed_owner_username, settings.seed_owner_password,
+         settings.seed_owner_name, UserRole.OWNER.value, None),
+        (settings.seed_manager_username, settings.seed_manager_password,
+         settings.seed_manager_name, UserRole.MANAGER.value, None),
+        # Engineers - hardcoded for dev. Add more via /admin/team in 2.3.
+        ("balaji", "balaji123", "Balaji", UserRole.ENGINEER.value, None),
+        ("ranjith", "ranjith123", "Ranjith", UserRole.ENGINEER.value, None),
+    ]
+    for username, password, name, role, email in seeds:
+        u = User(
+            username=username,
+            password_hash=hash_password(password),
+            name=name,
+            role=role,
+            active=True,
+            email=email,
+        )
+        db.add(u)
+    db.commit()
+    logger.info("Seeded %d initial users (owner, manager, %d engineers)",
+                len(seeds), len([s for s in seeds if s[3] == UserRole.ENGINEER.value]))
