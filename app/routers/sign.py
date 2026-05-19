@@ -20,7 +20,7 @@ from ..services.signing import (
     record_customer_signature,
 )
 
-logger = logging.getLogger("arckscare.sign")
+logger = logging.getLogger("skposcare.sign")
 
 router = APIRouter(prefix="/api/v1/sign", tags=["public-sign"])
 

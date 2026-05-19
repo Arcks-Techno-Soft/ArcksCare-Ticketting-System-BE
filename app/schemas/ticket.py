@@ -9,7 +9,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-from .auth import UserOut
+from .auth import SubEngineerOut, UserOut
 
 
 class BusinessType(str, Enum):
@@ -176,8 +176,42 @@ class TicketResponse(BaseModel):
     # Signing + PDF (Phase 2.4+) — only ever populated once resolve() runs.
     resolution: Optional["ResolutionOut"] = None
 
+    # Optional list of temporary field contractors brought in to help.
+    sub_engineers: List[SubEngineerOut] = []
+
     created_at: datetime
     attachments: List[AttachmentOut] = []
+
+
+class TicketListPage(BaseModel):
+    """Paginated envelope around TicketListItem rows."""
+    items: List["TicketListItem"]
+    total: int
+    limit: int
+    offset: int
+
+
+class TicketListItem(BaseModel):
+    """Lightweight projection for the admin inbox table.
+
+    Excludes lazy-loaded relationships (attachments, resolution, sub_engineers)
+    so listing 100 tickets stays a single SQL round-trip instead of 300+.
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    reference: str
+    business_name: str
+    city: str
+    state: str
+    product_category: str
+    serial_number: str
+    issue_category: str
+    severity: str
+    status: str
+    warranty_status: str
+    assigned_engineer: Optional[UserOut] = None
+    created_at: datetime
 
 
 class ResolutionOut(BaseModel):
@@ -191,8 +225,9 @@ class ResolutionOut(BaseModel):
     # Signing URL for support staff to share with the customer if needed.
     customer_sign_token: str
 
-# Update forward ref after class definition.
+# Update forward refs after the referenced classes are defined.
 TicketResponse.model_rebuild()
+TicketListPage.model_rebuild()
 
 
 class TicketDuplicateResponse(BaseModel):
@@ -204,3 +239,49 @@ class TicketDuplicateResponse(BaseModel):
     created_at: datetime
     hours_until_new_allowed: float
     message: str
+
+
+# ----------------------------- Shipments --------------------------------- #
+
+class ShipmentItemIn(BaseModel):
+    """One line in a "Ship parts" request."""
+    catalog_id: Optional[int] = None
+    name: Optional[str] = Field(default=None, max_length=160)
+    quantity: int = Field(default=1, ge=1, le=999)
+
+
+class ShipmentCreate(BaseModel):
+    courier_name: str = Field(min_length=2, max_length=120)
+    tracking_id: Optional[str] = Field(default=None, max_length=120)
+    # If omitted the server stamps datetime.now(UTC).
+    departed_at: Optional[datetime] = None
+    items: List[ShipmentItemIn] = Field(default_factory=list)
+
+    @field_validator("tracking_id", mode="before")
+    @classmethod
+    def _blank_tracking_to_none(cls, v):
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+
+class ShipmentItemOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    catalog_id: Optional[int] = None
+    name: str
+    quantity: int
+
+
+class ShipmentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    courier_name: str
+    tracking_id: Optional[str] = None
+    departed_at: datetime
+    delivered_at: Optional[datetime] = None
+    created_at: datetime
+    created_by: Optional[UserOut] = None
+    items: List[ShipmentItemOut] = []

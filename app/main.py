@@ -16,18 +16,19 @@ from .config import get_settings
 from .database import Base, SessionLocal, engine
 from .routers import admin as admin_router
 from .routers import auth as auth_router
+from .routers import installations as installations_router
 from .routers import sign as sign_router
 from .routers import tickets as tickets_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-logger = logging.getLogger("arckscare")
+logger = logging.getLogger("skposcare")
 
 settings = get_settings()
 
 app = FastAPI(
     title=f"{settings.app_name} API",
     description=(
-        "ArcksCare - support ticket intake for hardware customers "
+        "SK-POS Care - support ticket intake for hardware customers "
         "(POS, printers, KDS, UPS, kiosks, CCTV)."
     ),
     version="0.1.0",
@@ -46,6 +47,7 @@ app.add_middleware(
 app.include_router(tickets_router.router)
 app.include_router(auth_router.router)
 app.include_router(admin_router.router)
+app.include_router(installations_router.router)
 app.include_router(sign_router.router)
 
 # Serve uploaded files at /uploads/<ticket_ref>/<filename>.
@@ -65,13 +67,25 @@ def _bootstrap_db() -> None:
     # Import models so SQLAlchemy registers them on Base.metadata.
     from .models import ticket as _t  # noqa: F401
     from .models import user as _u  # noqa: F401
-    from .services.auth import seed_initial_users
+    from .models import spare as _s  # noqa: F401
+    from .models import installation as _i  # noqa: F401
+    from .services.auth import ensure_user_profile_columns, seed_initial_users
+    from .services.sample_data import seed_sample_tickets
+    from .services.shipments import ensure_shipment_delivered_at_column
+    from .services.spares import ensure_service_fee_column, seed_spare_catalog
 
+    # `create_all` adds new tables but NOT new columns on existing tables.
+    # Run column migrations first so the freshly-mapped ORM matches the DB.
+    ensure_service_fee_column(engine)
+    ensure_user_profile_columns(engine)
+    ensure_shipment_delivered_at_column(engine)
     Base.metadata.create_all(bind=engine)
     logger.info("Database ready: %s", settings.database_url.split("@")[-1])
 
     with SessionLocal() as db:
         seed_initial_users(db)
+        seed_spare_catalog(db)
+        seed_sample_tickets(db)
 
 
 @app.get("/")

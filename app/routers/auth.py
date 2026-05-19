@@ -16,7 +16,7 @@ from ..services.auth import (
     verify_password,
 )
 
-logger = logging.getLogger("arckscare.auth")
+logger = logging.getLogger("sk-pos-care.auth")
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 

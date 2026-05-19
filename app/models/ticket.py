@@ -98,6 +98,12 @@ class Ticket(Base):
     # Engineer's written resolution summary (filled when status goes RESOLVING→RESOLVED).
     resolution_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Service charge in INR, editable by the engineer. Default 500.
+    # NOTE: added post-Phase-2.4 — a startup ALTER fills this in for existing
+    # SQLite/Postgres rows that pre-date the column. Always treat the value as
+    # already-present here.
+    service_fee_inr: Mapped[int] = mapped_column(Integer, nullable=False, server_default="500", default=500)
+
     attachments: Mapped[List["TicketAttachment"]] = relationship(
         back_populates="ticket", cascade="all, delete-orphan"
     )
@@ -105,6 +111,21 @@ class Ticket(Base):
         back_populates="ticket",
         cascade="all, delete-orphan",
         order_by="WorkNote.created_at",
+    )
+    sub_engineers: Mapped[List["SubEngineer"]] = relationship(
+        back_populates="ticket",
+        cascade="all, delete-orphan",
+        order_by="SubEngineer.created_at",
+    )
+    spares: Mapped[List["TicketSpare"]] = relationship(
+        back_populates="ticket",
+        cascade="all, delete-orphan",
+        order_by="TicketSpare.created_at",
+    )
+    shipments: Mapped[List["TicketShipment"]] = relationship(
+        back_populates="ticket",
+        cascade="all, delete-orphan",
+        order_by="TicketShipment.departed_at.desc()",
     )
     resolution: Mapped[Optional["Resolution"]] = relationship(
         back_populates="ticket", cascade="all, delete-orphan", uselist=False
@@ -167,6 +188,31 @@ class WorkNote(Base):
 
     ticket: Mapped["Ticket"] = relationship(back_populates="work_notes")
     author: Mapped["User"] = relationship(lazy="joined")
+    attachments: Mapped[List["WorkNoteAttachment"]] = relationship(
+        back_populates="work_note",
+        cascade="all, delete-orphan",
+        order_by="WorkNoteAttachment.uploaded_at",
+    )
+
+
+class WorkNoteAttachment(Base):
+    """Optional images attached to a work note (worksite photos)."""
+
+    __tablename__ = "work_note_attachments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    work_note_id: Mapped[int] = mapped_column(
+        ForeignKey("work_notes.id", ondelete="CASCADE"), index=True
+    )
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(120))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    storage_url: Mapped[str] = mapped_column(String(500))
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    work_note: Mapped["WorkNote"] = relationship(back_populates="attachments")
 
 
 class TicketAttachment(Base):

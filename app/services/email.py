@@ -20,18 +20,18 @@ from ..config import get_settings
 from ..models.ticket import Ticket
 from .storage import get_storage
 
-logger = logging.getLogger("arckscare.email")
+logger = logging.getLogger("skposcare.email")
 
 
 def _absolute_attachment_url(url: str) -> str:
     """Convert /uploads/... relative URLs into absolute ones for the email body.
 
-    Falls back to the local dev URL; in prod, set ARCKSCARE_PUBLIC_URL env to
+    Falls back to the local dev URL; in prod, set SK_POS_CARE_PUBLIC_URL env to
     your real domain so links work outside your machine.
     """
     if url.startswith("http"):
         return url
-    base = os.environ.get("ARCKSCARE_PUBLIC_URL", "http://localhost:8000").rstrip("/")
+    base = os.environ.get("SK_POS_CARE_PUBLIC_URL", "http://localhost:8000").rstrip("/")
     return f"{base}{url}"
 
 
@@ -96,7 +96,7 @@ def _format_html(ticket: Ticket, support_url_base: Optional[str] = None) -> str:
 
       <hr style="border:none;border-top:1px solid #E5E5E5;margin:28px 0 16px;" />
       <p style="margin:0;color:#737373;font-size:12px;">
-        This notification was sent automatically by ArcksCare.
+        This notification was sent automatically by SK-POS Care.
       </p>
     </div>
     """
@@ -216,7 +216,7 @@ async def send_customer_sign_request(ticket: Ticket, sign_url: str) -> bool:
         f"Please confirm by reviewing the resolution and signing here:\n"
         f"  {sign_url}\n\n"
         f"This link is valid for {settings.customer_sign_token_ttl_days} days.\n\n"
-        f"— ArcksCare"
+        f"— SK-POS Care"
     )
     msg.set_content(text)
 

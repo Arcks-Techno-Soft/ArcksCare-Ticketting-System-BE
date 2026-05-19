@@ -72,7 +72,10 @@ def create_ticket(db: Session, payload: TicketCreate) -> Ticket:
     )
     db.add(ticket)
     db.flush()  # assigns ticket.id
-    ticket.reference = make_reference(ticket.id, year=datetime.utcnow().year)
+    # Prefix the reference with the RTO-style state code (e.g. UP-2026-00042).
+    ticket.reference = make_reference(
+        ticket.id, state=ticket.state, year=datetime.utcnow().year,
+    )
     db.commit()
     db.refresh(ticket)
     return ticket

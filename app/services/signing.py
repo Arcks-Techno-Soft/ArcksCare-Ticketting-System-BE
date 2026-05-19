@@ -23,7 +23,7 @@ from .pdf_generator import generate_resolution_pdf
 from .storage import get_storage
 from .ticket_workflow import _log_event
 
-logger = logging.getLogger("arckscare.signing")
+logger = logging.getLogger("skposcare.signing")
 
 SIGNATURE_MAX_BYTES = 2 * 1024 * 1024  # 2 MB is plenty for a PNG signature
 
@@ -96,10 +96,10 @@ def record_customer_signature_via_engineer(
     """Variant used when the engineer is on-site collecting the customer's
     signature on their own device. Same effect as record_customer_signature
     but with a role check (only the assigned engineer can capture it)."""
-    if actor.role != UserRole.ENGINEER.value or ticket.assigned_engineer_id != actor.id:
+    if ticket.assigned_engineer_id != actor.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the assigned engineer can capture the customer's signature",
+            detail="Only the assignee can capture the customer's signature",
         )
     resolution = _require_resolution(ticket)
     return record_customer_signature(
@@ -154,10 +154,10 @@ def record_engineer_signature(
     content_type: str = "image/png",
 ) -> Resolution:
     """Engineer signs after the customer has signed; closes the ticket and generates the PDF."""
-    if actor.role != UserRole.ENGINEER.value or ticket.assigned_engineer_id != actor.id:
+    if ticket.assigned_engineer_id != actor.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the assigned engineer can sign",
+            detail="Only the assignee can sign",
         )
     resolution = _require_resolution(ticket)
     if resolution.customer_signed_at is None:

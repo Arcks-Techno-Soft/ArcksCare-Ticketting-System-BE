@@ -1,4 +1,4 @@
-"""Drop and recreate all ArcksCare tables. Use after pulling schema changes.
+"""Drop and recreate all SK-POS Care tables. Use after pulling schema changes.
 
 USAGE (from backend/ directory):
     python -m scripts.reset_db

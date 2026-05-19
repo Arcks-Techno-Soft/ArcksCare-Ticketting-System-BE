@@ -16,13 +16,15 @@ from typing import Optional
 import bcrypt
 import jwt
 from fastapi import Depends, Header, HTTPException, status
+from sqlalchemy import inspect, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..database import get_db
 from ..models.user import User, UserRole
 
-logger = logging.getLogger("arckscare.auth")
+logger = logging.getLogger("sk-pos-care.auth")
 
 
 # ----------------------------- password hashing -------------------------- #
@@ -121,6 +123,31 @@ def require_role(*allowed: UserRole):
     return _checker
 
 
+# ----------------------------- Column migration ------------------------- #
+
+def ensure_user_profile_columns(engine: Engine) -> None:
+    """Add users.first_name / last_name / phone if missing.
+
+    `create_all` doesn't add columns to existing tables; this runs the small
+    ALTERs idempotently. Works on SQLite (dev) and Postgres (prod).
+    """
+    insp = inspect(engine)
+    if "users" not in insp.get_table_names():
+        return  # Fresh DB — create_all will include the columns.
+    existing = {c["name"] for c in insp.get_columns("users")}
+    pending = [
+        ("first_name", "VARCHAR(60)"),
+        ("last_name", "VARCHAR(60)"),
+        ("phone", "VARCHAR(20)"),
+    ]
+    with engine.begin() as conn:
+        for name, sql_type in pending:
+            if name in existing:
+                continue
+            conn.execute(text(f"ALTER TABLE users ADD COLUMN {name} {sql_type}"))
+            logger.info("Added users.%s column", name)
+
+
 # ----------------------------- Seed first-boot users --------------------- #
 
 def seed_initial_users(db: Session) -> None:
@@ -134,26 +161,31 @@ def seed_initial_users(db: Session) -> None:
         return
 
     settings = get_settings()
+    # (username, password, first_name, last_name, role)
     seeds = [
-        # Owner + manager from env vars
         (settings.seed_owner_username, settings.seed_owner_password,
-         settings.seed_owner_name, UserRole.OWNER.value, None),
+         settings.seed_owner_name.split(" ")[0] if settings.seed_owner_name else "Owner",
+         " ".join(settings.seed_owner_name.split(" ")[1:]) if settings.seed_owner_name and " " in settings.seed_owner_name else "",
+         UserRole.OWNER.value),
         (settings.seed_manager_username, settings.seed_manager_password,
-         settings.seed_manager_name, UserRole.MANAGER.value, None),
-        # Engineers - hardcoded for dev. Add more via /admin/team in 2.3.
-        ("balaji", "balaji123", "Balaji", UserRole.ENGINEER.value, None),
-        ("ranjith", "ranjith123", "Ranjith", UserRole.ENGINEER.value, None),
+         settings.seed_manager_name.split(" ")[0] if settings.seed_manager_name else "Manager",
+         " ".join(settings.seed_manager_name.split(" ")[1:]) if settings.seed_manager_name and " " in settings.seed_manager_name else "",
+         UserRole.MANAGER.value),
+        ("balaji", "balaji123", "Balaji", "Kumar", UserRole.ENGINEER.value),
+        ("ranjith", "ranjith123", "Ranjith", "Singh", UserRole.ENGINEER.value),
     ]
-    for username, password, name, role, email in seeds:
+    for username, password, first_name, last_name, role in seeds:
+        full_name = f"{first_name} {last_name}".strip() or username
         u = User(
             username=username,
             password_hash=hash_password(password),
-            name=name,
+            name=full_name,
+            first_name=first_name or None,
+            last_name=last_name or None,
             role=role,
             active=True,
-            email=email,
         )
         db.add(u)
     db.commit()
     logger.info("Seeded %d initial users (owner, manager, %d engineers)",
-                len(seeds), len([s for s in seeds if s[3] == UserRole.ENGINEER.value]))
+                len(seeds), len([s for s in seeds if s[4] == UserRole.ENGINEER.value]))

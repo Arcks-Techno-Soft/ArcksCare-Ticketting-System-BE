@@ -26,7 +26,7 @@ from ..models.ticket import (
 )
 from ..models.user import User, UserRole
 
-logger = logging.getLogger("arckscare.workflow")
+logger = logging.getLogger("skposcare.workflow")
 
 
 # --------------------------- helpers ------------------------------------- #
@@ -90,14 +90,18 @@ def acknowledge(db: Session, ticket: Ticket, actor: User) -> Ticket:
 def assign_engineer(db: Session, ticket: Ticket, actor: User, engineer_id: int) -> tuple[Ticket, User]:
     """ACKNOWLEDGED → ASSIGNED (or reassign while ASSIGNED/ACCEPTED). Manager/Owner only.
 
-    Returns (ticket, engineer) so the caller can fire a notification email.
+    The assignee can now be ANY active user (Engineer, Manager, or Owner) —
+    Owner/Manager may self-assign or be assigned by each other when needed.
+    The column is still called `assigned_engineer_id` for historical reasons.
+
+    Returns (ticket, assignee) so the caller can fire a notification email.
     """
     if actor.role not in (UserRole.OWNER.value, UserRole.MANAGER.value):
         raise HTTPException(status_code=403, detail="Only Manager or Owner can assign")
 
     engineer = db.query(User).filter(User.id == engineer_id).one_or_none()
-    if engineer is None or engineer.role != UserRole.ENGINEER.value or not engineer.active:
-        raise HTTPException(status_code=400, detail="Invalid engineer")
+    if engineer is None or not engineer.active:
+        raise HTTPException(status_code=400, detail="Invalid assignee")
 
     # Allow assigning from ACKNOWLEDGED, and reassigning while ASSIGNED/ACCEPTED.
     _require_status(
@@ -131,25 +135,26 @@ def assign_engineer(db: Session, ticket: Ticket, actor: User, engineer_id: int) 
     return ticket, engineer
 
 
-# --------------------------- engineer transitions ----------------------- #
+# --------------------------- assignee transitions ----------------------- #
 
-def _require_assigned_engineer(ticket: Ticket, actor: User) -> None:
-    """Only the engineer the ticket is assigned to can run engineer actions."""
-    if actor.role != UserRole.ENGINEER.value:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the assigned engineer can perform this action",
-        )
+def _require_assignee(ticket: Ticket, actor: User) -> None:
+    """Only the user the ticket is currently assigned to (regardless of role)
+    can run accept / start / resolve / sign-as-engineer. Lets Owner or Manager
+    self-assigned tickets run the engineer workflow too."""
     if ticket.assigned_engineer_id != actor.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="This ticket is assigned to a different engineer",
+            detail="This ticket is assigned to a different user",
         )
+
+
+# Backwards-compatibility alias for any internal callers we haven't migrated yet.
+_require_assigned_engineer = _require_assignee
 
 
 def accept(db: Session, ticket: Ticket, actor: User) -> Ticket:
     """ASSIGNED → ACCEPTED. Only the assigned engineer."""
-    _require_assigned_engineer(ticket, actor)
+    _require_assignee(ticket, actor)
     _require_status(ticket, {TicketStatus.ASSIGNED.value})
     prev = ticket.status
     ticket.status = TicketStatus.ACCEPTED.value
@@ -166,7 +171,7 @@ def accept(db: Session, ticket: Ticket, actor: User) -> Ticket:
 
 def start_work(db: Session, ticket: Ticket, actor: User) -> Ticket:
     """ACCEPTED → RESOLVING. Only the assigned engineer."""
-    _require_assigned_engineer(ticket, actor)
+    _require_assignee(ticket, actor)
     _require_status(ticket, {TicketStatus.ACCEPTED.value})
     prev = ticket.status
     ticket.status = TicketStatus.RESOLVING.value
@@ -181,19 +186,50 @@ def start_work(db: Session, ticket: Ticket, actor: User) -> Ticket:
     return ticket
 
 
-def add_work_note(db: Session, ticket: Ticket, actor: User, body: str) -> WorkNote:
-    """Add an internal work note. Only the assigned engineer, while RESOLVING."""
-    _require_assigned_engineer(ticket, actor)
+def add_work_note(
+    db: Session,
+    ticket: Ticket,
+    actor: User,
+    body: str,
+    attachments: Optional[list[dict]] = None,
+) -> WorkNote:
+    """Add an internal work note. Only the assigned engineer, while RESOLVING.
+
+    `attachments` is an optional list of pre-saved file metadata dicts
+    ({filename, content_type, size_bytes, storage_url}) returned by the
+    storage backend. Caller is responsible for saving the bytes first.
+    """
+    from ..models.ticket import WorkNoteAttachment  # local import keeps module load order safe
+
+    _require_assignee(ticket, actor)
     _require_status(ticket, {TicketStatus.RESOLVING.value})
     note = WorkNote(ticket_id=ticket.id, author_id=actor.id, body=body.strip())
     db.add(note)
+    db.flush()  # so note.id is available for attachments
+
+    if attachments:
+        for meta in attachments:
+            db.add(WorkNoteAttachment(
+                work_note_id=note.id,
+                filename=meta["filename"],
+                content_type=meta["content_type"],
+                size_bytes=int(meta["size_bytes"]),
+                storage_url=meta["storage_url"],
+            ))
+
     _log_event(
         db, ticket=ticket, actor=actor, event_type="NOTE_ADDED",
-        payload={"note_preview": body.strip()[:120]},
+        payload={
+            "note_preview": body.strip()[:120],
+            "attachment_count": len(attachments or []),
+        },
     )
     db.commit()
     db.refresh(note)
-    logger.info("Note added to %s by %s", ticket.reference, actor.username)
+    logger.info(
+        "Note added to %s by %s (%d image(s))",
+        ticket.reference, actor.username, len(attachments or []),
+    )
     return note
 
 
@@ -205,7 +241,7 @@ def resolve(db: Session, ticket: Ticket, actor: User, summary: str) -> tuple[Tic
     # Local import to avoid module-load cycle.
     from .signing import create_resolution_with_token  # noqa: WPS433
 
-    _require_assigned_engineer(ticket, actor)
+    _require_assignee(ticket, actor)
     _require_status(ticket, {TicketStatus.RESOLVING.value})
 
     prev = ticket.status
@@ -261,9 +297,9 @@ def update_severity(db: Session, ticket: Ticket, actor: User, new_severity: str)
 
 
 def update_warranty(db: Session, ticket: Ticket, actor: User, new_status: str) -> Ticket:
-    """Owner-only. Owner can update warranty at any status."""
-    if actor.role != UserRole.OWNER.value:
-        raise HTTPException(status_code=403, detail="Only Owner can update warranty")
+    """Owner or Manager can update warranty at any status."""
+    if actor.role not in (UserRole.OWNER.value, UserRole.MANAGER.value):
+        raise HTTPException(status_code=403, detail="Only Manager or Owner can update warranty")
     if new_status not in {w.value for w in WarrantyStatus}:
         raise HTTPException(status_code=400, detail=f"Invalid warranty status: {new_status}")
 

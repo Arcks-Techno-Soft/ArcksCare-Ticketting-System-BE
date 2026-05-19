@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class LoginRequest(BaseModel):
@@ -16,9 +16,34 @@ class UserOut(BaseModel):
     id: int
     username: str
     name: str
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    phone: Optional[str] = None
     role: str
     active: bool
     email: Optional[str] = None
+
+
+class CreateUserRequest(BaseModel):
+    first_name: str = Field(min_length=1, max_length=60)
+    last_name: str = Field(min_length=1, max_length=60)
+    phone: str = Field(min_length=7, max_length=20)
+    email: str = Field(min_length=3, max_length=200)
+    # Owner picks both username + password — no auto-generation. Username must
+    # be 3-50 chars, lowercased a-z/0-9/dot/underscore/hyphen so it can sit in
+    # URLs and logs without escaping.
+    username: str = Field(min_length=3, max_length=50, pattern=r"^[a-z0-9._-]+$")
+    password: str = Field(min_length=8, max_length=200)
+    # Accepted: "MANAGER" (admin-tier) or "ENGINEER".
+    role: str = Field(pattern=r"^(MANAGER|ENGINEER)$")
+
+
+class CreateUserResponse(BaseModel):
+    user: UserOut
+
+
+class UpdateUserActiveRequest(BaseModel):
+    active: bool
 
 
 class TokenResponse(BaseModel):
@@ -55,6 +80,25 @@ class TicketEventOut(BaseModel):
     actor: Optional[UserOut] = None
 
 
+class WorkNoteAttachmentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    filename: str
+    content_type: str
+    size_bytes: int
+    storage_url: str
+
+    @field_validator("storage_url", mode="after")
+    @classmethod
+    def _resolve_storage_url(cls, v: str) -> str:
+        from ..services.storage import get_storage  # noqa: WPS433
+        try:
+            return get_storage().public_url(v)
+        except Exception:
+            return v
+
+
 class WorkNoteOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -62,6 +106,98 @@ class WorkNoteOut(BaseModel):
     body: str
     created_at: datetime
     author: UserOut
+    attachments: list[WorkNoteAttachmentOut] = []
+
+
+class SubEngineerOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    phone: str
+    location: str
+    created_at: datetime
+    created_by: Optional[UserOut] = None
+
+
+class AddSubEngineerRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    phone: str = Field(min_length=7, max_length=20)
+    location: str = Field(min_length=2, max_length=120)
+
+
+class SpareCatalogItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    product_category: str
+    name: str
+    default_price_inr: int
+
+
+class TicketSpareOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    catalog_id: Optional[int] = None
+    name: str
+    unit_price_inr: int
+    quantity: int
+    created_at: datetime
+    created_by: Optional[UserOut] = None
+
+
+class AddTicketSpareRequest(BaseModel):
+    # Either pick from the catalog (preferred)…
+    catalog_id: Optional[int] = None
+    # …or supply a free-form name + price (ad-hoc parts).
+    name: Optional[str] = Field(default=None, max_length=160)
+    unit_price_inr: Optional[int] = Field(default=None, ge=0, le=10_000_000)
+    quantity: int = Field(default=1, ge=1, le=999)
+
+
+class UpdateTicketSpareRequest(BaseModel):
+    unit_price_inr: Optional[int] = Field(default=None, ge=0, le=10_000_000)
+    quantity: Optional[int] = Field(default=None, ge=1, le=999)
+
+
+class UpdateServiceFeeRequest(BaseModel):
+    service_fee_inr: int = Field(ge=0, le=10_000_000)
+
+
+class ChargeLineItem(BaseModel):
+    id: int
+    catalog_id: Optional[int] = None
+    name: str
+    unit_price_inr: int
+    quantity: int
+    line_total_inr: int
+    billable: bool
+
+
+class ChargesSummary(BaseModel):
+    warranty_status: str
+    is_warranty: bool
+    service_fee_inr: int
+    service_fee_billable_inr: int
+    spares_list_price_total_inr: int
+    spares_billable_total_inr: int
+    grand_total_inr: int
+    items: list[ChargeLineItem]
+
+
+class SubEngineerSuggestion(BaseModel):
+    """A previously-used sub-engineer in this ticket's city.
+
+    Distinct by (name, phone). `times_used` is how many past tickets in the
+    same city have used this contact, ordered most-recent first.
+    """
+
+    name: str
+    phone: str
+    location: str
+    times_used: int
+    last_used_at: datetime
 
 
 class AddWorkNoteRequest(BaseModel):

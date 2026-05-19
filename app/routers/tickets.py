@@ -24,7 +24,7 @@ from ..services.ticket_service import (
     hours_remaining_in_window,
 )
 
-logger = logging.getLogger("arckscare.tickets")
+logger = logging.getLogger("skposcare.tickets")
 
 router = APIRouter(prefix="/api/v1/tickets", tags=["tickets"])
 

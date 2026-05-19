@@ -24,7 +24,7 @@ from fastapi import HTTPException, UploadFile, status
 
 from ..config import get_settings
 
-logger = logging.getLogger("arckscare.storage")
+logger = logging.getLogger("skposcare.storage")
 
 MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
 ALLOWED_EXT = {"jpg", "jpeg", "png", "gif", "mp4", "mov"}

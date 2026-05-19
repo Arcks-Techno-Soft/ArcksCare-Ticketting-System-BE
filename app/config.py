@@ -17,11 +17,17 @@ class Settings(BaseSettings):
     )
 
     # App
-    app_name: str = Field(default="ArcksCare")
+    app_name: str = Field(default="SK-POS Care")
     app_env: str = Field(default="development")
 
     # Database
-    database_url: str = Field(default="sqlite:///./arckscare.db")
+    database_url: str = Field(default="sqlite:///./sk-pos-care.db")
+    # Pool sizing — keep low so a single dev process can't exhaust Supabase's
+    # session-mode pooler (which caps at 15 client connections). Production
+    # behind the transaction-mode pooler (port 6543) can safely raise these.
+    db_pool_size: int = Field(default=3)
+    db_max_overflow: int = Field(default=2)
+    db_pool_recycle_seconds: int = Field(default=300)
 
     # CORS
     cors_origins: str = Field(default="http://localhost:3000")
@@ -31,7 +37,7 @@ class Settings(BaseSettings):
     smtp_port: int = Field(default=587)
     smtp_user: str = Field(default="")
     smtp_password: str = Field(default="")
-    smtp_from_name: str = Field(default="ArcksCare Support")
+    smtp_from_name: str = Field(default="SK-POS Care Support")
     smtp_from_email: str = Field(default="")
     support_inbox: str = Field(default="support@test.com")
 
@@ -45,7 +51,7 @@ class Settings(BaseSettings):
     # Supabase Storage (only required when storage_backend="supabase")
     supabase_url: str = Field(default="")          # e.g. https://abcd1234.supabase.co
     supabase_service_key: str = Field(default="")  # the "service_role" secret from API settings
-    supabase_bucket: str = Field(default="")       # e.g. arckscare-uploads
+    supabase_bucket: str = Field(default="")       # e.g. sk-pos-care-uploads
     supabase_signed_url_ttl_seconds: int = Field(default=604800)  # 7 days
 
     # Auth
