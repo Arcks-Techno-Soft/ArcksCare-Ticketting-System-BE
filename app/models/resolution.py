@@ -36,6 +36,21 @@ class Resolution(Base):
     # Engineer signature
     engineer_signature_storage_key: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     engineer_signed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Name shown for the second (engineer) signature. Populated with the
+    # sub-engineer's name in the remote field-signing flow; stays NULL for the
+    # on-site flow, where the PDF falls back to the assigned engineer's name.
+    engineer_signer_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+
+    # Remote field-signing link. When set, a sub-engineer collects BOTH
+    # signatures off-site via /field-sign/<token>, and on-site signing in the
+    # admin app is locked for this ticket.
+    field_sign_link_generated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Which sub-engineer signed remotely (field-signing flow only).
+    signed_by_sub_engineer_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("sub_engineers.id", ondelete="SET NULL"), nullable=True
+    )
 
     # PDF
     pdf_storage_key: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)

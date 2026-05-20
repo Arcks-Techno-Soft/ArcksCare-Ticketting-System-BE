@@ -31,6 +31,9 @@ class User(Base):
     last_name: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
     phone: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     role: Mapped[str] = mapped_column(String(20), default=UserRole.ENGINEER.value, index=True)
+    # District an Engineer covers. Used to surface district-matched engineers
+    # first in the ticket assignment dropdown. NULL for Owner/Manager.
+    district: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     email: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

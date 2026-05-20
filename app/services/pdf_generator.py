@@ -238,13 +238,24 @@ def generate_resolution_pdf(ticket: Ticket, resolution: Resolution) -> bytes:
         cust_bytes,
         body,
     )
-    sig_right = _signature_cell(
-        "Engineer",
-        eng_name,
-        resolution.engineer_signed_at,
-        engineer_bytes,
-        body,
-    )
+    # When the resolution was signed remotely, the second signature belongs to
+    # the sub-engineer who collected it on-site — label and name it as such.
+    if resolution.engineer_signer_name:
+        sig_right = _signature_cell(
+            "Sub-Engineer",
+            resolution.engineer_signer_name,
+            resolution.engineer_signed_at,
+            engineer_bytes,
+            body,
+        )
+    else:
+        sig_right = _signature_cell(
+            "Engineer",
+            eng_name,
+            resolution.engineer_signed_at,
+            engineer_bytes,
+            body,
+        )
     sig_body = Table([[sig_left, sig_right]], colWidths=[CARD_WIDTH_HALF, CARD_WIDTH_HALF])
     sig_body.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),

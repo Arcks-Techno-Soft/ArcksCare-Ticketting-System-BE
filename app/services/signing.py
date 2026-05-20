@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..models.resolution import Resolution
+from ..models.shipment import TicketShipment
 from ..models.ticket import Ticket, TicketStatus
 from ..models.user import User, UserRole
 from .pdf_generator import generate_resolution_pdf
@@ -40,6 +41,12 @@ def _customer_sign_url(token: str) -> str:
     return f"{base}/sign/{token}"
 
 
+def _field_sign_url(token: str) -> str:
+    """Public URL the sub-engineer opens to collect both signatures off-site."""
+    base = get_settings().customer_sign_url_base.rstrip("/")
+    return f"{base}/field-sign/{token}"
+
+
 def _require_resolution(ticket: Ticket) -> Resolution:
     if ticket.resolution is None:
         raise HTTPException(
@@ -47,6 +54,40 @@ def _require_resolution(ticket: Ticket) -> Resolution:
             detail="This ticket has no resolution. Engineer must resolve it first.",
         )
     return ticket.resolution
+
+
+def _reject_if_field_signing(resolution: Resolution) -> None:
+    """On-site signing is locked once a remote field-signing link is generated."""
+    if resolution.field_sign_link_generated_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "A remote signing link is active for this ticket — "
+                "on-site signing is disabled."
+            ),
+        )
+
+
+def _assert_parts_delivered(db: Session, ticket: Ticket) -> None:
+    """Block the RESOLVED → CLOSED transition while any spare-parts shipment
+    is still in transit. The ticket can't close until every shipment has been
+    marked delivered."""
+    undelivered = (
+        db.query(TicketShipment)
+        .filter(
+            TicketShipment.ticket_id == ticket.id,
+            TicketShipment.delivered_at.is_(None),
+        )
+        .count()
+    )
+    if undelivered:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"{undelivered} spare-parts shipment(s) still in transit — "
+                "mark every shipment delivered before closing the ticket."
+            ),
+        )
 
 
 # ----------------------------- public API -------------------------------- #
@@ -102,6 +143,7 @@ def record_customer_signature_via_engineer(
             detail="Only the assignee can capture the customer's signature",
         )
     resolution = _require_resolution(ticket)
+    _reject_if_field_signing(resolution)
     return record_customer_signature(
         db, ticket, resolution,
         signer_name=signer_name,
@@ -160,6 +202,7 @@ def record_engineer_signature(
             detail="Only the assignee can sign",
         )
     resolution = _require_resolution(ticket)
+    _reject_if_field_signing(resolution)
     if resolution.customer_signed_at is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -170,6 +213,8 @@ def record_engineer_signature(
             status_code=status.HTTP_409_CONFLICT,
             detail="Engineer signature already recorded",
         )
+    # The engineer signature closes the ticket — block it while parts ship.
+    _assert_parts_delivered(db, ticket)
     _validate_signature(image_bytes)
 
     storage = get_storage()
@@ -208,6 +253,176 @@ def record_engineer_signature(
     db.refresh(resolution)
     logger.info("Engineer signed + PDF generated for %s", ticket.reference)
     return resolution
+
+
+# ----------------------- remote field signing ---------------------------- #
+
+def generate_field_sign_link(
+    db: Session, ticket: Ticket, actor: User
+) -> Tuple[Resolution, str]:
+    """Generate the no-login link a sub-engineer uses to collect both
+    signatures off-site. Returns (resolution, field_sign_url).
+
+    Available once the ticket is RESOLVED and has at least one sub-engineer.
+    Idempotent — calling it again returns the existing link. Once generated,
+    on-site signing in the admin app is locked for this ticket.
+    """
+    if (
+        actor.role not in (UserRole.OWNER.value, UserRole.MANAGER.value)
+        and ticket.assigned_engineer_id != actor.id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the assignee, Owner, or Manager can generate the signing link",
+        )
+    if ticket.status != TicketStatus.RESOLVED.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The ticket must be RESOLVED before generating a signing link.",
+        )
+    if not ticket.sub_engineers:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Add a sub-engineer to the ticket before generating a remote signing link.",
+        )
+    resolution = _require_resolution(ticket)
+    if resolution.customer_signed_at is not None or resolution.engineer_signed_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Signing has already started for this ticket.",
+        )
+    if resolution.field_sign_link_generated_at is None:
+        resolution.field_sign_link_generated_at = datetime.now(timezone.utc)
+        _log_event(
+            db, ticket=ticket, actor=actor, event_type="FIELD_SIGN_LINK_GENERATED",
+        )
+        db.commit()
+        db.refresh(resolution)
+        logger.info("Field-signing link generated for %s by %s", ticket.reference, actor.username)
+    return resolution, _field_sign_url(resolution.customer_sign_token)
+
+
+def record_field_signatures(
+    db: Session,
+    ticket: Ticket,
+    resolution: Resolution,
+    *,
+    sub_engineer_id: int,
+    customer_signer_name: str,
+    customer_image_bytes: bytes,
+    engineer_image_bytes: bytes,
+    customer_content_type: str = "image/png",
+    engineer_content_type: str = "image/png",
+) -> Resolution:
+    """Record the customer + sub-engineer signatures collected via the remote
+    link, generate the resolution PDF, and close the ticket. No auth — the
+    token is the auth factor (validated by the caller)."""
+    if resolution.field_sign_link_generated_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This ticket is not set up for remote signing.",
+        )
+    if resolution.customer_signed_at is not None or resolution.engineer_signed_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This resolution has already been signed.",
+        )
+    sub = next((s for s in ticket.sub_engineers if s.id == sub_engineer_id), None)
+    if sub is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Select a valid sub-engineer for this ticket.",
+        )
+    # This submission closes the ticket — block it while parts ship.
+    _assert_parts_delivered(db, ticket)
+    _validate_signature(customer_image_bytes)
+    _validate_signature(engineer_image_bytes)
+
+    storage = get_storage()
+    cust_meta = storage.save_bytes(
+        customer_image_bytes,
+        customer_content_type,
+        ticket.reference,
+        f"signature-customer-{ticket.reference}.png",
+    )
+    eng_meta = storage.save_bytes(
+        engineer_image_bytes,
+        engineer_content_type,
+        ticket.reference,
+        f"signature-subengineer-{ticket.reference}.png",
+    )
+
+    now = datetime.now(timezone.utc)
+    resolution.customer_signer_name = customer_signer_name.strip()[:120]
+    resolution.customer_signature_storage_key = cust_meta["storage_url"]
+    resolution.customer_signed_at = now
+    resolution.engineer_signature_storage_key = eng_meta["storage_url"]
+    resolution.engineer_signed_at = now
+    resolution.engineer_signer_name = sub.name.strip()[:120]
+    resolution.signed_by_sub_engineer_id = sub.id
+    db.flush()
+
+    # Both signatures are in place — render the PDF and close the ticket.
+    pdf_bytes = generate_resolution_pdf(ticket, resolution)
+    pdf_meta = storage.save_bytes(
+        pdf_bytes,
+        "application/pdf",
+        ticket.reference,
+        f"resolution-{ticket.reference}.pdf",
+    )
+    resolution.pdf_storage_key = pdf_meta["storage_url"]
+    resolution.pdf_generated_at = now
+
+    prev = ticket.status
+    ticket.status = TicketStatus.CLOSED.value
+    _log_event(
+        db, ticket=ticket, actor=None, event_type="CUSTOMER_SIGNED",
+        payload={"signer_name": resolution.customer_signer_name},
+    )
+    _log_event(
+        db, ticket=ticket, actor=None, event_type="SUB_ENGINEER_SIGNED",
+        payload={"signer_name": sub.name},
+    )
+    _log_event(
+        db, ticket=ticket, actor=None, event_type="CLOSED",
+        from_status=prev, to_status=ticket.status,
+    )
+    db.commit()
+    db.refresh(ticket)
+    db.refresh(resolution)
+    logger.info(
+        "Field signatures recorded for %s by sub-engineer %s — ticket closed",
+        ticket.reference, sub.name,
+    )
+    return resolution
+
+
+def ensure_resolution_field_signing_columns(engine) -> None:
+    """Add the remote field-signing columns to `resolutions` if missing.
+
+    `Base.metadata.create_all` doesn't add columns to existing tables, so we
+    apply these small ALTERs directly. Idempotent. Works on SQLite + Postgres.
+    """
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "resolutions" not in insp.get_table_names():
+        return  # Fresh DB — create_all will include the columns.
+    columns = {c["name"] for c in insp.get_columns("resolutions")}
+    ts_type = "TIMESTAMPTZ" if engine.dialect.name == "postgresql" else "TIMESTAMP"
+    stmts: list[str] = []
+    if "engineer_signer_name" not in columns:
+        stmts.append("ALTER TABLE resolutions ADD COLUMN engineer_signer_name VARCHAR(120)")
+    if "field_sign_link_generated_at" not in columns:
+        stmts.append(f"ALTER TABLE resolutions ADD COLUMN field_sign_link_generated_at {ts_type}")
+    if "signed_by_sub_engineer_id" not in columns:
+        stmts.append("ALTER TABLE resolutions ADD COLUMN signed_by_sub_engineer_id INTEGER")
+    if not stmts:
+        return
+    with engine.begin() as conn:
+        for stmt in stmts:
+            conn.execute(text(stmt))
+    logger.info("Added field-signing columns to resolutions (%d)", len(stmts))
 
 
 def _validate_signature(image_bytes: bytes) -> None:

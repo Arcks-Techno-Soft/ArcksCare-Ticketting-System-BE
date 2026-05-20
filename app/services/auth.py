@@ -139,6 +139,7 @@ def ensure_user_profile_columns(engine: Engine) -> None:
         ("first_name", "VARCHAR(60)"),
         ("last_name", "VARCHAR(60)"),
         ("phone", "VARCHAR(20)"),
+        ("district", "VARCHAR(80)"),
     ]
     with engine.begin() as conn:
         for name, sql_type in pending:

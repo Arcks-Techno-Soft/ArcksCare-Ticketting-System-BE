@@ -221,8 +221,12 @@ class ResolutionOut(BaseModel):
     customer_signer_name: Optional[str] = None
     customer_signed_at: Optional[datetime] = None
     engineer_signed_at: Optional[datetime] = None
+    # Sub-engineer's name when the resolution was signed via the remote link.
+    engineer_signer_name: Optional[str] = None
     pdf_generated_at: Optional[datetime] = None
-    # Signing URL for support staff to share with the customer if needed.
+    # Set once the remote field-signing link is generated — locks on-site signing.
+    field_sign_link_generated_at: Optional[datetime] = None
+    # Signing token. The frontend builds the field-sign URL from this.
     customer_sign_token: str
 
 # Update forward refs after the referenced classes are defined.

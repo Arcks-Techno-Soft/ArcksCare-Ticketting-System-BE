@@ -22,6 +22,8 @@ class UserOut(BaseModel):
     role: str
     active: bool
     email: Optional[str] = None
+    # District an Engineer covers (NULL for Owner/Manager).
+    district: Optional[str] = None
 
 
 class CreateUserRequest(BaseModel):
@@ -36,6 +38,16 @@ class CreateUserRequest(BaseModel):
     password: str = Field(min_length=8, max_length=200)
     # Accepted: "MANAGER" (admin-tier) or "ENGINEER".
     role: str = Field(pattern=r"^(MANAGER|ENGINEER)$")
+    # District an Engineer covers — used to match incoming tickets by city.
+    # Optional; only meaningful for ENGINEER accounts.
+    district: Optional[str] = Field(default=None, max_length=80)
+
+    @field_validator("district", mode="before")
+    @classmethod
+    def _blank_district_to_none(cls, v):
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
 
 class CreateUserResponse(BaseModel):
@@ -116,14 +128,52 @@ class SubEngineerOut(BaseModel):
     name: str
     phone: str
     location: str
+    # Fee paid to this outsourced contractor for this ticket (INR). NULL until set.
+    fee_inr: Optional[int] = None
     created_at: datetime
     created_by: Optional[UserOut] = None
 
 
+class UpdateSubEngineerFeeRequest(BaseModel):
+    fee_inr: int = Field(ge=0, le=10_000_000)
+
+
 class AddSubEngineerRequest(BaseModel):
+    """Add a sub-engineer to a ticket.
+
+    Either pass `roster_id` to pick an existing roster contact, or pass
+    `name` + `phone` + `location` for a brand-new contact (which is also
+    added to the district roster).
+    """
+    roster_id: Optional[int] = None
+    name: Optional[str] = Field(default=None, min_length=2, max_length=120)
+    phone: Optional[str] = Field(default=None, min_length=7, max_length=20)
+    location: Optional[str] = Field(default=None, min_length=2, max_length=120)
+
+
+class SubEngineerRosterOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    phone: str
+    district: str
+    active: bool
+    created_at: datetime
+    created_by: Optional[UserOut] = None
+
+
+class CreateRosterSubEngineerRequest(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     phone: str = Field(min_length=7, max_length=20)
-    location: str = Field(min_length=2, max_length=120)
+    district: str = Field(min_length=2, max_length=80)
+
+
+class UpdateRosterSubEngineerRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=2, max_length=120)
+    phone: Optional[str] = Field(default=None, min_length=7, max_length=20)
+    district: Optional[str] = Field(default=None, min_length=2, max_length=80)
+    active: Optional[bool] = None
 
 
 class SpareCatalogItem(BaseModel):
@@ -184,20 +234,6 @@ class ChargesSummary(BaseModel):
     spares_billable_total_inr: int
     grand_total_inr: int
     items: list[ChargeLineItem]
-
-
-class SubEngineerSuggestion(BaseModel):
-    """A previously-used sub-engineer in this ticket's city.
-
-    Distinct by (name, phone). `times_used` is how many past tickets in the
-    same city have used this contact, ordered most-recent first.
-    """
-
-    name: str
-    phone: str
-    location: str
-    times_used: int
-    last_used_at: datetime
 
 
 class AddWorkNoteRequest(BaseModel):

@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models.shipment import TicketShipment, TicketShipmentItem
 from ..models.spare import SpareCatalog, TicketSpare
-from ..models.sub_engineer import SubEngineer
+from ..models.sub_engineer import SubEngineer, SubEngineerRoster
 from ..models.ticket import Ticket, TicketEvent, WorkNote
 from ..models.user import User, UserRole
 from ..schemas.auth import (
@@ -26,16 +26,19 @@ from ..schemas.auth import (
     AddWorkNoteRequest,
     AssignEngineerRequest,
     ChargesSummary,
+    CreateRosterSubEngineerRequest,
     CreateUserRequest,
     CreateUserResponse,
     ResolveRequest,
     SpareCatalogItem,
     SubEngineerOut,
-    SubEngineerSuggestion,
+    SubEngineerRosterOut,
     TicketEventOut,
     TicketSpareOut,
+    UpdateRosterSubEngineerRequest,
     UpdateSeverityRequest,
     UpdateServiceFeeRequest,
+    UpdateSubEngineerFeeRequest,
     UpdateTicketSpareRequest,
     UpdateUserActiveRequest,
     UpdateWarrantyRequest,
@@ -53,6 +56,7 @@ from ..services.analytics import compute_analytics
 from ..services.auth import get_current_user, hash_password, require_role
 from ..services.email import send_engineer_assignment
 from ..services.signing import (
+    generate_field_sign_link,
     record_customer_signature_via_engineer,
     record_engineer_signature,
 )
@@ -123,6 +127,8 @@ def create_user(
         phone=body.phone,
         email=body.email,
         role=body.role,
+        # District only applies to field engineers.
+        district=body.district if body.role == UserRole.ENGINEER.value else None,
         active=True,
     )
     db.add(user)
@@ -404,22 +410,50 @@ async def sign_as_engineer(
     return ticket
 
 
+@router.post("/tickets/{reference}/field-sign-link")
+def create_field_sign_link(
+    reference: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Generate the no-login link a sub-engineer uses to collect both the
+    customer's and their own signature off-site.
+
+    Available once the ticket is RESOLVED and has at least one sub-engineer.
+    Idempotent — returns the existing link if already generated. Once
+    generated, on-site signing in the admin app is locked for this ticket.
+    """
+    ticket = _load_ticket(db, reference)
+    resolution, url = generate_field_sign_link(db, ticket, user)
+    return {
+        "url": url,
+        "token": resolution.customer_sign_token,
+        "generated_at": resolution.field_sign_link_generated_at,
+    }
+
+
 @router.get("/tickets/{reference}/pdf")
 def get_resolution_pdf_url(
     reference: str,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Return a short-lived URL to the resolution PDF (Manager / Owner only).
+    """Return a short-lived URL to the resolution PDF.
 
-    We return JSON rather than a redirect because the frontend calls this with
-    a JWT Authorization header — browser navigation via plain <a href> would
-    drop that header and fail with 401. The frontend opens the returned URL
-    in a new tab to download.
+    Accessible to the Owner, a Manager, or the engineer the ticket is assigned
+    to. We return JSON rather than a redirect because the frontend calls this
+    with a JWT Authorization header — browser navigation via plain <a href>
+    would drop that header and fail with 401. The frontend opens the returned
+    URL in a new tab to download.
     """
-    if user.role not in (UserRole.OWNER.value, UserRole.MANAGER.value):
-        raise HTTPException(status_code=403, detail="Manager or Owner only")
     ticket = _load_ticket(db, reference)
+    if (
+        user.role not in (UserRole.OWNER.value, UserRole.MANAGER.value)
+        and ticket.assigned_engineer_id != user.id
+    ):
+        raise HTTPException(
+            status_code=403, detail="Manager, Owner, or the assigned engineer only"
+        )
     res = ticket.resolution
     if res is None or not res.pdf_storage_key:
         raise HTTPException(
@@ -546,6 +580,33 @@ def _can_manage_sub_engineers(ticket: Ticket, user: User) -> bool:
     return ticket.assigned_engineer_id == user.id
 
 
+def _ensure_roster_entry(
+    db: Session, *, name: str, phone: str, district: str, actor: User
+) -> SubEngineerRoster:
+    """Return the matching active roster contact, creating one if absent.
+
+    Called when a brand-new sub-engineer is added to a ticket, so the contact
+    becomes reusable from the district roster. Matched case-insensitively by
+    name + district."""
+    existing = (
+        db.query(SubEngineerRoster)
+        .filter(
+            func.lower(SubEngineerRoster.name) == name.lower(),
+            func.lower(SubEngineerRoster.district) == district.lower(),
+            SubEngineerRoster.active.is_(True),
+        )
+        .first()
+    )
+    if existing is not None:
+        return existing
+    entry = SubEngineerRoster(
+        name=name, phone=phone, district=district, created_by_user_id=actor.id
+    )
+    db.add(entry)
+    db.flush()
+    return entry
+
+
 @router.get("/tickets/{reference}/sub-engineers", response_model=List[SubEngineerOut])
 def list_sub_engineers(
     reference: str,
@@ -563,58 +624,39 @@ def list_sub_engineers(
 
 @router.get(
     "/tickets/{reference}/sub-engineer-suggestions",
-    response_model=List[SubEngineerSuggestion],
+    response_model=List[SubEngineerRosterOut],
 )
 def list_sub_engineer_suggestions(
     reference: str,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Previously-used sub-engineers in this ticket's city.
+    """Roster contacts for this ticket's district — feeds the add dropdown.
 
-    Returns distinct contacts (by name + phone) drawn from prior tickets in
-    the same city, with how often they've been used and when they were last
-    added. Sub-engineers already on *this* ticket are filtered out so the
-    dropdown doesn't suggest duplicates.
+    Returns active roster entries whose district matches the ticket's city,
+    minus contacts already on this ticket so the dropdown only offers new
+    additions.
     """
     ticket = _load_ticket(db, reference)
     city_key = ticket.city.strip()
     if not city_key:
         return []
 
-    # Aggregate by (name, phone) so the same contact appearing on N past
-    # tickets shows up once with times_used = N. SQLite's lower() is fine
-    # for our scale; if we ever move to Postgres we can switch to ILIKE.
     rows = (
-        db.query(
-            SubEngineer.name.label("name"),
-            SubEngineer.phone.label("phone"),
-            func.max(SubEngineer.location).label("location"),
-            func.count(SubEngineer.id).label("times_used"),
-            func.max(SubEngineer.created_at).label("last_used_at"),
+        db.query(SubEngineerRoster)
+        .filter(
+            SubEngineerRoster.active.is_(True),
+            func.lower(SubEngineerRoster.district) == city_key.lower(),
         )
-        .join(Ticket, Ticket.id == SubEngineer.ticket_id)
-        .filter(func.lower(Ticket.city) == city_key.lower())
-        .filter(SubEngineer.ticket_id != ticket.id)
-        .group_by(SubEngineer.name, SubEngineer.phone)
-        .order_by(func.max(SubEngineer.created_at).desc())
-        .limit(50)
+        .order_by(SubEngineerRoster.name)
         .all()
     )
-
     already_on_ticket = {
         (s.name.strip().lower(), s.phone.strip())
         for s in ticket.sub_engineers
     }
     return [
-        SubEngineerSuggestion(
-            name=r.name,
-            phone=r.phone,
-            location=r.location,
-            times_used=int(r.times_used),
-            last_used_at=r.last_used_at,
-        )
-        for r in rows
+        r for r in rows
         if (r.name.strip().lower(), r.phone.strip()) not in already_on_ticket
     ]
 
@@ -626,7 +668,11 @@ def add_sub_engineer(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Add an ad-hoc field contractor to the ticket.
+    """Add a field contractor to the ticket.
+
+    Either pick an existing roster contact (`roster_id`) or supply a new
+    contact (`name` + `phone` + `location`) — a new contact is also recorded
+    in the district roster so it's reusable later.
 
     Available after the ticket has been ACKNOWLEDGED. Caller must be the
     current assignee, Owner, or Manager.
@@ -642,11 +688,36 @@ def add_sub_engineer(
             status_code=403,
             detail="Only the assignee, Owner, or Manager can add sub-engineers",
         )
+
+    if body.roster_id is not None:
+        entry = (
+            db.query(SubEngineerRoster)
+            .filter(
+                SubEngineerRoster.id == body.roster_id,
+                SubEngineerRoster.active.is_(True),
+            )
+            .one_or_none()
+        )
+        if entry is None:
+            raise HTTPException(status_code=404, detail="Roster contact not found")
+        name, phone, location = entry.name, entry.phone, entry.district
+    else:
+        if not (body.name and body.phone and body.location):
+            raise HTTPException(
+                status_code=422,
+                detail="Provide roster_id, or name + phone + location for a new contact.",
+            )
+        name = body.name.strip()
+        phone = body.phone.strip()
+        location = body.location.strip()
+        # A brand-new contact also joins the district roster for future reuse.
+        _ensure_roster_entry(db, name=name, phone=phone, district=location, actor=user)
+
     sub = SubEngineer(
         ticket_id=ticket.id,
-        name=body.name.strip(),
-        phone=body.phone.strip(),
-        location=body.location.strip(),
+        name=name,
+        phone=phone,
+        location=location,
         created_by_user_id=user.id,
     )
     db.add(sub)
@@ -676,6 +747,129 @@ def remove_sub_engineer(
     db.delete(sub)
     db.commit()
     return None
+
+
+@router.patch(
+    "/tickets/{reference}/sub-engineers/{sub_id}",
+    response_model=SubEngineerOut,
+)
+def update_sub_engineer_fee(
+    reference: str,
+    sub_id: int,
+    body: UpdateSubEngineerFeeRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Record the fee paid to an outsourced sub-engineer for this ticket.
+
+    Internal cost only — it does not affect the customer invoice or the
+    resolution PDF. Editable by the assignee, Owner, or Manager at any status.
+    """
+    ticket = _load_ticket(db, reference)
+    if not _can_manage_sub_engineers(ticket, user):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the assignee, Owner, or Manager can set sub-engineer fees",
+        )
+    sub = (
+        db.query(SubEngineer)
+        .filter(SubEngineer.id == sub_id, SubEngineer.ticket_id == ticket.id)
+        .one_or_none()
+    )
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Sub-engineer not found")
+    sub.fee_inr = int(body.fee_inr)
+    db.commit()
+    db.refresh(sub)
+    logger.info(
+        "Sub-engineer %s fee set to INR %d on %s by %s",
+        sub.name, sub.fee_inr, ticket.reference, user.username,
+    )
+    return sub
+
+
+# --------------------------- sub-engineer roster ----------------------- #
+
+@router.get("/sub-engineer-roster", response_model=List[SubEngineerRosterOut])
+def list_sub_engineer_roster(
+    district: Optional[str] = Query(default=None),
+    include_inactive: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    """The district roster of field contractors. Any staff can read it."""
+    q = db.query(SubEngineerRoster)
+    if not include_inactive:
+        q = q.filter(SubEngineerRoster.active.is_(True))
+    if district:
+        q = q.filter(func.lower(SubEngineerRoster.district) == district.strip().lower())
+    return q.order_by(SubEngineerRoster.district, SubEngineerRoster.name).all()
+
+
+@router.post("/sub-engineer-roster", response_model=SubEngineerRosterOut, status_code=201)
+def create_sub_engineer_roster_entry(
+    body: CreateRosterSubEngineerRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(UserRole.OWNER, UserRole.MANAGER)),
+):
+    """Add a contact to the district roster. Owner / Manager only."""
+    name = body.name.strip()
+    district = body.district.strip()
+    existing = (
+        db.query(SubEngineerRoster)
+        .filter(
+            func.lower(SubEngineerRoster.name) == name.lower(),
+            func.lower(SubEngineerRoster.district) == district.lower(),
+            SubEngineerRoster.active.is_(True),
+        )
+        .first()
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="A roster contact with that name already exists in this district.",
+        )
+    entry = SubEngineerRoster(
+        name=name,
+        phone=body.phone.strip(),
+        district=district,
+        created_by_user_id=user.id,
+    )
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    logger.info("Roster contact %s (%s) added by %s", entry.name, entry.district, user.username)
+    return entry
+
+
+@router.patch("/sub-engineer-roster/{entry_id}", response_model=SubEngineerRosterOut)
+def update_sub_engineer_roster_entry(
+    entry_id: int,
+    body: UpdateRosterSubEngineerRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(UserRole.OWNER, UserRole.MANAGER)),
+):
+    """Edit or deactivate a roster contact. Owner / Manager only.
+
+    Deactivating just hides the contact from the add dropdown — sub-engineers
+    already recorded on tickets are untouched.
+    """
+    entry = (
+        db.query(SubEngineerRoster).filter(SubEngineerRoster.id == entry_id).one_or_none()
+    )
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Roster contact not found")
+    if body.name is not None:
+        entry.name = body.name.strip()
+    if body.phone is not None:
+        entry.phone = body.phone.strip()
+    if body.district is not None:
+        entry.district = body.district.strip()
+    if body.active is not None:
+        entry.active = body.active
+    db.commit()
+    db.refresh(entry)
+    return entry
 
 
 # --------------------------- spare parts / charges ---------------------- #

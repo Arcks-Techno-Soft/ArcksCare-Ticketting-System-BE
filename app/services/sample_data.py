@@ -14,6 +14,7 @@ import random
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..models.ticket import Severity, Ticket, TicketStatus, WarrantyStatus
@@ -51,6 +52,152 @@ def _reference_for(seq: int, year: int, state: Optional[str] = None) -> str:
 
 def _aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+# District-coverage test data: field engineers in distinct districts plus one
+# open ticket from each. Lets the district-aware assignment dropdown be tested
+# end-to-end. `city` is set equal to the district so matching works (the
+# assignment dropdown matches engineer.district against ticket.city).
+# Tuple: (district, state, pincode, first, last, username, password,
+#         business_name, contact_name, product, issue, serial)
+DISTRICT_SEED = [
+    ("Mysuru", "Karnataka", "570001", "Suresh", "Gowda",
+     "suresh.mysuru", "suresh123", "Mysuru Test Diner", "Latha Prasad",
+     "POS Machine", "Display Issue", "DISTSEED-MYS-01"),
+    ("Mangaluru", "Karnataka", "575001", "Prakash", "Shetty",
+     "prakash.mangaluru", "prakash123", "Mangaluru Test Cafe", "Deepak Pai",
+     "Printer", "Printing Issue", "DISTSEED-MNG-01"),
+    ("Coimbatore", "Tamil Nadu", "641001", "Karthik", "Raman",
+     "karthik.coimbatore", "karthik123", "Coimbatore Test Hotel", "Meena Subramani",
+     "Kitchen Display Screen", "Software Crash", "DISTSEED-CBE-01"),
+    ("Vijayawada", "Andhra Pradesh", "520001", "Naveen", "Reddy",
+     "naveen.vijayawada", "naveen123", "Vijayawada Test Mart", "Ramesh Babu",
+     "UPS", "Not Powering On", "DISTSEED-VJA-01"),
+    ("Nashik", "Maharashtra", "422001", "Amol", "Patil",
+     "amol.nashik", "amol123", "Nashik Test Kitchen", "Sanjay Jadhav",
+     "CCTV", "Connectivity", "DISTSEED-NSK-01"),
+]
+
+# Ad-hoc field contractors for each district, attached to that district's
+# seeded ticket. Sub-engineers always belong to a ticket; once recorded they
+# also surface as suggestions for future tickets in the same city.
+# Keyed by district -> list of (name, phone).
+DISTRICT_SUB_ENGINEERS = {
+    "Mysuru": [("Ravi Kumar", "+919812345001"), ("Manjunath Bhat", "+919812345002")],
+    "Mangaluru": [("Vasanth Rao", "+919812345003"), ("Ganesh Hegde", "+919812345004")],
+    "Coimbatore": [("Senthil Murugan", "+919812345005"), ("Arun Prakash", "+919812345006")],
+    "Vijayawada": [("Srinivas Chowdary", "+919812345007"), ("Kiran Varma", "+919812345008")],
+    "Nashik": [("Rohit Pawar", "+919812345009"), ("Sachin Deshmukh", "+919812345010")],
+}
+
+
+def seed_district_test_data(db: Session) -> None:
+    """Seed field engineers in distinct districts, one acknowledged ticket from
+    each, and a per-district sub-engineer roster — so the district-aware
+    assignment dropdown and the sub-engineer roster can be tested.
+
+    Idempotent and additive: every row is guarded by its own existence check,
+    so the seed self-heals and never duplicates across restarts.
+    """
+    from ..models.sub_engineer import SubEngineer, SubEngineerRoster  # local import avoids a cycle
+    from ..services.auth import hash_password
+    from ..utils.ticket_id import make_reference
+
+    acker = (
+        db.query(User).filter(User.role == UserRole.MANAGER.value).first()
+        or db.query(User).filter(User.role == UserRole.OWNER.value).first()
+    )
+
+    now = datetime.now(timezone.utc)
+    year = now.year
+    n_eng = n_tic = n_roster = n_removed = 0
+
+    for (district, state, pincode, first, last, username, password,
+         business_name, contact_name, product, issue, serial) in DISTRICT_SEED:
+        # --- engineer covering this district ---
+        if db.query(User).filter(User.username == username).first() is None:
+            db.add(User(
+                username=username,
+                password_hash=hash_password(password),
+                name=f"{first} {last}",
+                first_name=first,
+                last_name=last,
+                phone=f"+9190{random.Random(username).randint(10000000, 99999999)}",
+                email=f"{username}@arckscare.example",
+                role=UserRole.ENGINEER.value,
+                district=district,
+                active=True,
+            ))
+            n_eng += 1
+
+        # --- one acknowledged ticket raised from that district ---
+        ticket = db.query(Ticket).filter(Ticket.serial_number == serial).first()
+        if ticket is None:
+            ticket = Ticket(
+                reference=f"SEED-{serial}",  # temp unique value; replaced after flush
+                business_name=business_name,
+                contact_name=contact_name,
+                phone="+919800000000",
+                email=f"{serial.lower()}@example.com",
+                business_type="Restaurant",
+                address_line1="1 Test Road",
+                city=district,  # city == district so the matching works
+                state=state,
+                pincode=pincode,
+                product_category=product,
+                serial_number=serial,
+                issue_category=issue,
+                severity=Severity.MEDIUM.value,
+                description=(
+                    f"Sample ticket from {district} for testing district-based "
+                    f"engineer assignment. Reported: {issue.lower()} on the {product}."
+                ),
+                status=TicketStatus.ACKNOWLEDGED.value,
+                warranty_status=WarrantyStatus.UNKNOWN.value,
+                acknowledged_by_id=acker.id if acker else None,
+                acknowledged_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(ticket)
+            db.flush()  # assigns ticket.id
+            ticket.reference = make_reference(ticket.id, state=state, year=year)
+            n_tic += 1
+
+        # --- district roster of field contractors (reusable across tickets) ---
+        for sub_name, sub_phone in DISTRICT_SUB_ENGINEERS.get(district, []):
+            in_roster = (
+                db.query(SubEngineerRoster)
+                .filter(
+                    func.lower(SubEngineerRoster.name) == sub_name.lower(),
+                    func.lower(SubEngineerRoster.district) == district.lower(),
+                )
+                .first()
+            )
+            if in_roster is None:
+                db.add(SubEngineerRoster(
+                    name=sub_name,
+                    phone=sub_phone,
+                    district=district,
+                    created_by_user_id=acker.id if acker else None,
+                ))
+                n_roster += 1
+            # Drop the earlier per-ticket seed rows so the roster is the single
+            # source and every district ticket's add-dropdown is populated.
+            for stale in (
+                db.query(SubEngineer)
+                .filter(SubEngineer.ticket_id == ticket.id, SubEngineer.name == sub_name)
+                .all()
+            ):
+                db.delete(stale)
+                n_removed += 1
+
+    db.commit()
+    logger.info(
+        "Seeded district test data: %d engineers, %d tickets, %d roster contacts "
+        "(%d stale ticket rows removed)",
+        n_eng, n_tic, n_roster, n_removed,
+    )
 
 
 def seed_sample_tickets(db: Session) -> None:

@@ -69,16 +69,21 @@ def _bootstrap_db() -> None:
     from .models import user as _u  # noqa: F401
     from .models import spare as _s  # noqa: F401
     from .models import installation as _i  # noqa: F401
+    from .models import sub_engineer as _se  # noqa: F401
     from .services.auth import ensure_user_profile_columns, seed_initial_users
-    from .services.sample_data import seed_sample_tickets
+    from .services.sample_data import seed_district_test_data, seed_sample_tickets
     from .services.shipments import ensure_shipment_delivered_at_column
+    from .services.signing import ensure_resolution_field_signing_columns
     from .services.spares import ensure_service_fee_column, seed_spare_catalog
+    from .services.sub_engineers import ensure_sub_engineer_fee_column
 
     # `create_all` adds new tables but NOT new columns on existing tables.
     # Run column migrations first so the freshly-mapped ORM matches the DB.
     ensure_service_fee_column(engine)
     ensure_user_profile_columns(engine)
     ensure_shipment_delivered_at_column(engine)
+    ensure_resolution_field_signing_columns(engine)
+    ensure_sub_engineer_fee_column(engine)
     Base.metadata.create_all(bind=engine)
     logger.info("Database ready: %s", settings.database_url.split("@")[-1])
 
@@ -86,6 +91,7 @@ def _bootstrap_db() -> None:
         seed_initial_users(db)
         seed_spare_catalog(db)
         seed_sample_tickets(db)
+        seed_district_test_data(db)
 
 
 @app.get("/")
