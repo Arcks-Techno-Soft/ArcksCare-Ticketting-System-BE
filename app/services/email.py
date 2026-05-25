@@ -96,7 +96,7 @@ def _format_html(ticket: Ticket, support_url_base: Optional[str] = None) -> str:
 
       <hr style="border:none;border-top:1px solid #E5E5E5;margin:28px 0 16px;" />
       <p style="margin:0;color:#737373;font-size:12px;">
-        This notification was sent automatically by SK-POS Care.
+        This notification was sent automatically by SK-POS Support.
       </p>
     </div>
     """
@@ -216,7 +216,7 @@ async def send_customer_sign_request(ticket: Ticket, sign_url: str) -> bool:
         f"Please confirm by reviewing the resolution and signing here:\n"
         f"  {sign_url}\n\n"
         f"This link is valid for {settings.customer_sign_token_ttl_days} days.\n\n"
-        f"— SK-POS Care"
+        f"— SK-POS Support"
     )
     msg.set_content(text)
 

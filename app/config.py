@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     )
 
     # App
-    app_name: str = Field(default="SK-POS Care")
+    app_name: str = Field(default="SK-POS Support")
     app_env: str = Field(default="development")
 
     # Database
@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     smtp_port: int = Field(default=587)
     smtp_user: str = Field(default="")
     smtp_password: str = Field(default="")
-    smtp_from_name: str = Field(default="SK-POS Care Support")
+    smtp_from_name: str = Field(default="SK-POS Support Support")
     smtp_from_email: str = Field(default="")
     support_inbox: str = Field(default="support@test.com")
 

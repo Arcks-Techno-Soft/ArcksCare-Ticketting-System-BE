@@ -28,7 +28,7 @@ settings = get_settings()
 app = FastAPI(
     title=f"{settings.app_name} API",
     description=(
-        "SK-POS Care - support ticket intake for hardware customers "
+        "SK-POS Support - support ticket intake for hardware customers "
         "(POS, printers, KDS, UPS, kiosks, CCTV)."
     ),
     version="0.1.0",
