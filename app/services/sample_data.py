@@ -331,3 +331,224 @@ def seed_sample_tickets(db: Session) -> None:
 
     db.commit()
     logger.info("Seeded %d sample tickets for analytics.", created)
+
+
+# ---------------------------------------------------------------------------
+# Customer-facing tracker demo
+# ---------------------------------------------------------------------------
+# Five fixed-reference tickets that cover every status stage end-to-end, so
+# the public "Track your ticket" page on the marketing site can be demoed
+# with a hard-coded reference. References are AC-{YEAR}-90001..90005, picked
+# from a high-sequence range that won't collide with real submissions.
+
+DEMO_TICKETS = [
+    {
+        "seq": 90001,
+        "status": TicketStatus.OPEN.value,
+        "business_name": "Spice Garden Restaurant",
+        "contact_name": "Anita Rao",
+        "phone": "+919812345001",
+        "email": "anita@spicegarden.example",
+        "business_type": "Restaurant",
+        "address_line1": "12 MG Road",
+        "city": "Bengaluru",
+        "state": "Karnataka",
+        "pincode": "560001",
+        "product_category": "POS Machine",
+        "serial_number": "POS-DEMO-001",
+        "issue_category": "Not Powering On",
+        "severity": Severity.HIGH.value,
+        "description": "POS terminal won't power on at all — checkout queue is backing up.",
+        "hours_ago": 2,
+    },
+    {
+        "seq": 90002,
+        "status": TicketStatus.ACKNOWLEDGED.value,
+        "business_name": "Cafe Aroma",
+        "contact_name": "Vikram Shah",
+        "phone": "+919812345002",
+        "email": "vikram@cafearoma.example",
+        "business_type": "Cafe",
+        "address_line1": "44 Park Street",
+        "city": "Mumbai",
+        "state": "Maharashtra",
+        "pincode": "400001",
+        "product_category": "Printer",
+        "serial_number": "PRN-DEMO-002",
+        "issue_category": "Printing Issue",
+        "severity": Severity.MEDIUM.value,
+        "description": "Receipt printer is jammed and won't feed paper.",
+        "hours_ago": 8,
+    },
+    {
+        "seq": 90003,
+        "status": TicketStatus.ASSIGNED.value,
+        "business_name": "Hotel Maple",
+        "contact_name": "Priya Iyer",
+        "phone": "+919812345003",
+        "email": "priya@hotelmaple.example",
+        "business_type": "Hotel",
+        "address_line1": "9 Brigade Road",
+        "city": "Chennai",
+        "state": "Tamil Nadu",
+        "pincode": "600001",
+        "product_category": "Kitchen Display Screen",
+        "serial_number": "KDS-DEMO-003",
+        "issue_category": "Display Issue",
+        "severity": Severity.MEDIUM.value,
+        "description": "Kitchen display flickers and reboots every few minutes during peak service.",
+        "hours_ago": 26,
+    },
+    {
+        "seq": 90004,
+        "status": TicketStatus.RESOLVING.value,
+        "business_name": "Greenleaf Pharmacy",
+        "contact_name": "Rahul Mehta",
+        "phone": "+919812345004",
+        "email": "rahul@greenleaf.example",
+        "business_type": "Other",
+        "address_line1": "27 Linking Road",
+        "city": "Hyderabad",
+        "state": "Telangana",
+        "pincode": "500001",
+        "product_category": "UPS",
+        "serial_number": "UPS-DEMO-004",
+        "issue_category": "Not Powering On",
+        "severity": Severity.HIGH.value,
+        "description": "UPS battery doesn't hold charge — pharmacy goes offline during power cuts.",
+        "hours_ago": 30,
+    },
+    {
+        "seq": 90005,
+        "status": TicketStatus.CLOSED.value,
+        "business_name": "Sunset Diner",
+        "contact_name": "Neha Gupta",
+        "phone": "+919812345005",
+        "email": "neha@sunsetdiner.example",
+        "business_type": "Restaurant",
+        "address_line1": "5 FC Road",
+        "city": "Pune",
+        "state": "Maharashtra",
+        "pincode": "411001",
+        "product_category": "POS Machine",
+        "serial_number": "POS-DEMO-005",
+        "issue_category": "Software Crash",
+        "severity": Severity.LOW.value,
+        "description": "POS software crashes when processing split-bill payments.",
+        "hours_ago": 60,
+    },
+]
+
+
+def seed_demo_tickets(db: Session) -> None:
+    """Create five fixed-reference demo tickets covering every status stage.
+
+    Idempotent — early-returns if `AC-{year}-90001` is already present.
+    """
+    year = datetime.now(timezone.utc).year
+    first_ref = f"AC-{year}-{DEMO_TICKETS[0]['seq']:05d}"
+    if db.query(Ticket).filter(Ticket.reference == first_ref).first() is not None:
+        return
+
+    owner = db.query(User).filter(User.role == UserRole.OWNER.value).first()
+    manager = (
+        db.query(User).filter(User.role == UserRole.MANAGER.value).first()
+        or owner
+    )
+    engineer = (
+        db.query(User)
+        .filter(User.role == UserRole.ENGINEER.value, User.active.is_(True))
+        .first()
+    )
+
+    acker = manager or owner
+    asgner = manager or owner
+
+    now = datetime.now(timezone.utc)
+    created = 0
+
+    for spec in DEMO_TICKETS:
+        created_at = now - timedelta(hours=spec["hours_ago"])
+        status = spec["status"]
+
+        ack_at = created_at + timedelta(minutes=25) if status != TicketStatus.OPEN.value else None
+        asg_at = (
+            created_at + timedelta(hours=1)
+            if status in {
+                TicketStatus.ASSIGNED.value, TicketStatus.ACCEPTED.value,
+                TicketStatus.RESOLVING.value, TicketStatus.RESOLVED.value,
+                TicketStatus.CLOSED.value,
+            }
+            else None
+        )
+        acc_at = (
+            created_at + timedelta(hours=2)
+            if status in {
+                TicketStatus.ACCEPTED.value, TicketStatus.RESOLVING.value,
+                TicketStatus.RESOLVED.value, TicketStatus.CLOSED.value,
+            }
+            else None
+        )
+        rs_at = (
+            created_at + timedelta(hours=3)
+            if status in {
+                TicketStatus.RESOLVING.value, TicketStatus.RESOLVED.value,
+                TicketStatus.CLOSED.value,
+            }
+            else None
+        )
+        r_at = (
+            created_at + timedelta(hours=6)
+            if status in {TicketStatus.RESOLVED.value, TicketStatus.CLOSED.value}
+            else None
+        )
+
+        eng_id = engineer.id if (asg_at and engineer) else None
+        ack_id = acker.id if (ack_at and acker) else None
+        asg_id = asgner.id if (asg_at and asgner) else None
+
+        ticket = Ticket(
+            reference=f"AC-{year}-{spec['seq']:05d}",
+            business_name=spec["business_name"],
+            contact_name=spec["contact_name"],
+            phone=spec["phone"],
+            email=spec["email"],
+            business_type=spec["business_type"],
+            address_line1=spec["address_line1"],
+            city=spec["city"],
+            state=spec["state"],
+            pincode=spec["pincode"],
+            product_category=spec["product_category"],
+            serial_number=spec["serial_number"],
+            issue_category=spec["issue_category"],
+            severity=spec["severity"],
+            description=spec["description"],
+            status=status,
+            warranty_status=WarrantyStatus.UNDER_WARRANTY.value,
+            acknowledged_by_id=ack_id,
+            acknowledged_at=ack_at,
+            assigned_by_id=asg_id,
+            assigned_engineer_id=eng_id,
+            assigned_at=asg_at,
+            accepted_at=acc_at,
+            resolving_started_at=rs_at,
+            resolved_at=r_at,
+            resolution_summary=(
+                "Replaced the faulty component on-site and verified end-to-end. "
+                "Customer signed the resolution receipt."
+                if r_at
+                else None
+            ),
+            service_fee_inr=500,
+            created_at=created_at,
+            updated_at=r_at or rs_at or acc_at or asg_at or ack_at or created_at,
+        )
+        db.add(ticket)
+        created += 1
+
+    db.commit()
+    logger.info(
+        "Seeded %d customer-tracker demo tickets (refs AC-%d-90001..90005).",
+        created,
+        year,
+    )

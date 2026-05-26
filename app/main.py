@@ -71,7 +71,11 @@ def _bootstrap_db() -> None:
     from .models import installation as _i  # noqa: F401
     from .models import sub_engineer as _se  # noqa: F401
     from .services.auth import ensure_user_profile_columns, seed_initial_users
-    from .services.sample_data import seed_district_test_data, seed_sample_tickets
+    from .services.sample_data import (
+        seed_demo_tickets,
+        seed_district_test_data,
+        seed_sample_tickets,
+    )
     from .services.shipments import ensure_shipment_delivered_at_column
     from .services.signing import ensure_resolution_field_signing_columns
     from .services.spares import ensure_service_fee_column, seed_spare_catalog
@@ -92,6 +96,7 @@ def _bootstrap_db() -> None:
         seed_spare_catalog(db)
         seed_sample_tickets(db)
         seed_district_test_data(db)
+        seed_demo_tickets(db)
 
 
 @app.get("/")
