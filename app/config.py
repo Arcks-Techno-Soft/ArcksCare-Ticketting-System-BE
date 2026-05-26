@@ -54,6 +54,16 @@ class Settings(BaseSettings):
     supabase_bucket: str = Field(default="")       # e.g. sk-pos-care-uploads
     supabase_signed_url_ttl_seconds: int = Field(default=604800)  # 7 days
 
+    # WhatsApp Cloud API (Meta) — optional staff notifications on new ticket.
+    # Silent no-op when any of the first three are blank.
+    whatsapp_phone_number_id: str = Field(default="")
+    whatsapp_access_token: str = Field(default="")
+    whatsapp_template_name: str = Field(default="")
+    whatsapp_template_language: str = Field(default="en")
+    # Base for the smart redirect link embedded in the WhatsApp message,
+    # e.g. https://arcks-care-ticketting-system-fe.vercel.app
+    whatsapp_link_base: str = Field(default="")
+
     # Auth
     jwt_secret: str = Field(default="change-me-in-production-this-must-be-a-long-random-string")
     jwt_algorithm: str = Field(default="HS256")

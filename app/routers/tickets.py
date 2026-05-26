@@ -18,6 +18,7 @@ from ..schemas.ticket import (
 )
 from ..services.email import send_ticket_notification
 from ..services.storage import cleanup_ticket_files, save_uploads
+from ..services.whatsapp import send_new_ticket_alert
 from ..services.ticket_service import (
     create_ticket,
     find_recent_open_ticket,
@@ -105,6 +106,7 @@ async def submit_ticket(
 
     # 5) Fire-and-forget email
     background.add_task(send_ticket_notification, ticket)
+    background.add_task(send_new_ticket_alert, ticket.id)
 
     return ticket
 
