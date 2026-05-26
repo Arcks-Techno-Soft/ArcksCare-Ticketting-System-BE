@@ -1,18 +1,30 @@
-"""WhatsApp Cloud API (Meta) notification service.
+"""WhatsApp notification service via Twilio.
 
-Sends a templated WhatsApp message to every active OWNER or MANAGER user
-whose `phone` column is populated whenever a new ticket is created.
+Sends a WhatsApp message to every active OWNER or MANAGER user whose
+``phone`` column is populated whenever a new ticket is created.
 
-Silent no-op if any of the required env vars (`WHATSAPP_PHONE_NUMBER_ID`,
-`WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_TEMPLATE_NAME`) is missing, so the app
-deploys cleanly before the Meta side has been configured.
+Two send paths, both hitting the same Twilio Messages REST endpoint:
+
+* If ``TWILIO_CONTENT_SID`` is set, the message is sent as an approved
+  content template with positional ``ContentVariables`` — required for
+  production WhatsApp senders outside the 24-hour user-initiated window.
+* Otherwise the message is sent as a plain text body. This is the path
+  used with the Twilio WhatsApp Sandbox, where each recipient has
+  already opted in by sending "join {sandbox-keyword}" from their
+  WhatsApp to the sandbox number.
+
+Silent no-op if any of ``TWILIO_ACCOUNT_SID``, ``TWILIO_AUTH_TOKEN``, or
+``TWILIO_WHATSAPP_FROM`` is missing, so the app deploys cleanly before
+Twilio has been configured.
 
 Designed to be invoked from a FastAPI BackgroundTask — opens its own DB
-session (the request session is already closed by the time it runs).
+session because the request session is already closed by the time the
+task runs.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 
 import httpx
@@ -24,20 +36,19 @@ from ..models.user import User, UserRole
 
 logger = logging.getLogger("skposcare.whatsapp")
 
-GRAPH_API_VERSION = "v21.0"
-WHATSAPP_GRAPH_URL = "https://graph.facebook.com/{ver}/{phone_id}/messages"
+TWILIO_API_URL = "https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
 
 
 def _normalise_phone(raw: str | None) -> str | None:
-    """Meta expects E.164 digits with no leading '+'. Strip everything else."""
+    """Twilio expects E.164 with a leading '+' for WhatsApp recipients."""
     if not raw:
         return None
     digits = "".join(c for c in raw if c.isdigit())
-    return digits or None
+    return f"+{digits}" if digits else None
 
 
 def _staff_phones(db) -> list[tuple[str, str]]:
-    """Return [(phone, display_name), …] for every active OWNER / MANAGER."""
+    """Return ``[(phone, display_name), …]`` for every active OWNER / MANAGER."""
     users = (
         db.query(User)
         .filter(User.role.in_([UserRole.OWNER.value, UserRole.MANAGER.value]))
@@ -56,28 +67,18 @@ def _build_link(reference: str, base: str) -> str:
     return f"{base.rstrip('/')}/r/{reference}"
 
 
-def _build_template_payload(
-    to: str,
-    template_name: str,
-    language: str,
-    body_params: list[str],
-) -> dict:
-    """Body-only template payload — no header/buttons."""
-    return {
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "template",
-        "template": {
-            "name": template_name,
-            "language": {"code": language},
-            "components": [
-                {
-                    "type": "body",
-                    "parameters": [{"type": "text", "text": p} for p in body_params],
-                }
-            ],
-        },
-    }
+def _build_plain_body(body_params: list[str]) -> str:
+    """Plain-text formatter that mirrors the original Meta-template layout.
+
+    Used when ``TWILIO_CONTENT_SID`` is blank (Sandbox flow).
+    """
+    ref, where, what, severity, link = body_params
+    return (
+        f"\U0001f6e0️  *New ticket {ref}* — {severity} severity\n\n"
+        f"{where}\n"
+        f"{what}\n\n"
+        f"Open: {link}"
+    )
 
 
 def send_new_ticket_alert(ticket_id: int) -> None:
@@ -85,12 +86,13 @@ def send_new_ticket_alert(ticket_id: int) -> None:
     settings = get_settings()
 
     if not (
-        settings.whatsapp_phone_number_id
-        and settings.whatsapp_access_token
-        and settings.whatsapp_template_name
+        settings.twilio_account_sid
+        and settings.twilio_auth_token
+        and settings.twilio_whatsapp_from
     ):
         logger.debug(
-            "WhatsApp not configured — skipping notification for ticket id=%s",
+            "Twilio not configured — skipping WhatsApp notification for "
+            "ticket id=%s",
             ticket_id,
         )
         return
@@ -109,11 +111,8 @@ def send_new_ticket_alert(ticket_id: int) -> None:
             )
             return
 
-        link_base = (
-            settings.whatsapp_link_base
-            or settings.cors_origins_list[0]
-            if settings.cors_origins_list
-            else ""
+        link_base = settings.whatsapp_link_base or (
+            settings.cors_origins_list[0] if settings.cors_origins_list else ""
         )
         if not link_base:
             logger.warning(
@@ -125,7 +124,8 @@ def send_new_ticket_alert(ticket_id: int) -> None:
 
         link = _build_link(ticket.reference, link_base)
 
-        # Order MUST match the template's {{1}}..{{5}} placeholders.
+        # Order MUST match the template's {{1}}..{{5}} placeholders when a
+        # ContentSid is in use; the plain-body formatter uses the same order.
         body_params = [
             ticket.reference,
             f"{ticket.business_name}, {ticket.city}",
@@ -134,28 +134,39 @@ def send_new_ticket_alert(ticket_id: int) -> None:
             link,
         ]
 
-        url = WHATSAPP_GRAPH_URL.format(
-            ver=GRAPH_API_VERSION,
-            phone_id=settings.whatsapp_phone_number_id,
-        )
-        headers = {
-            "Authorization": f"Bearer {settings.whatsapp_access_token}",
-            "Content-Type": "application/json",
-        }
+        url = TWILIO_API_URL.format(sid=settings.twilio_account_sid)
+        auth = (settings.twilio_account_sid, settings.twilio_auth_token)
+        from_addr = settings.twilio_whatsapp_from
+        if not from_addr.startswith("whatsapp:"):
+            from_addr = f"whatsapp:{from_addr}"
+
+        use_template = bool(settings.twilio_content_sid)
 
         ok = 0
         for phone, name in recipients:
-            payload = _build_template_payload(
-                phone,
-                settings.whatsapp_template_name,
-                settings.whatsapp_template_language,
-                body_params,
-            )
+            to_addr = f"whatsapp:{phone}"
+            if use_template:
+                data = {
+                    "From": from_addr,
+                    "To": to_addr,
+                    "ContentSid": settings.twilio_content_sid,
+                    # Twilio expects a JSON-encoded mapping of "1","2",… → text.
+                    "ContentVariables": json.dumps(
+                        {str(i + 1): v for i, v in enumerate(body_params)}
+                    ),
+                }
+            else:
+                data = {
+                    "From": from_addr,
+                    "To": to_addr,
+                    "Body": _build_plain_body(body_params),
+                }
+
             try:
-                resp = httpx.post(url, headers=headers, json=payload, timeout=10.0)
+                resp = httpx.post(url, data=data, auth=auth, timeout=10.0)
                 if resp.status_code >= 400:
                     logger.warning(
-                        "WhatsApp send failed for %s (%s): HTTP %s — %s",
+                        "Twilio WhatsApp send failed for %s (%s): HTTP %s — %s",
                         name,
                         phone,
                         resp.status_code,
@@ -165,7 +176,7 @@ def send_new_ticket_alert(ticket_id: int) -> None:
                     ok += 1
             except Exception as exc:  # noqa: BLE001 — last-ditch logging
                 logger.warning(
-                    "WhatsApp send raised for %s (%s): %s", name, phone, exc
+                    "Twilio WhatsApp send raised for %s (%s): %s", name, phone, exc
                 )
 
         logger.info(

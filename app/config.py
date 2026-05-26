@@ -54,13 +54,18 @@ class Settings(BaseSettings):
     supabase_bucket: str = Field(default="")       # e.g. sk-pos-care-uploads
     supabase_signed_url_ttl_seconds: int = Field(default=604800)  # 7 days
 
-    # WhatsApp Cloud API (Meta) — optional staff notifications on new ticket.
-    # Silent no-op when any of the first three are blank.
-    whatsapp_phone_number_id: str = Field(default="")
-    whatsapp_access_token: str = Field(default="")
-    whatsapp_template_name: str = Field(default="")
-    whatsapp_template_language: str = Field(default="en")
-    # Base for the smart redirect link embedded in the WhatsApp message,
+    # WhatsApp notifications via Twilio — optional staff alerts on new ticket.
+    # Silent no-op when any of the first three are blank, so the app deploys
+    # cleanly before Twilio has been configured.
+    twilio_account_sid: str = Field(default="")
+    twilio_auth_token: str = Field(default="")
+    # Sender address, e.g. "whatsapp:+14155238886" for the Twilio Sandbox.
+    twilio_whatsapp_from: str = Field(default="")
+    # Optional approved content-template SID for production WhatsApp senders.
+    # When blank, messages are sent as plain text (works with Twilio Sandbox
+    # once recipients have opted in with "join {sandbox-keyword}").
+    twilio_content_sid: str = Field(default="")
+    # Base for the smart-redirect link embedded in the message body,
     # e.g. https://arcks-care-ticketting-system-fe.vercel.app
     whatsapp_link_base: str = Field(default="")
 
