@@ -55,6 +55,7 @@ from ..schemas.ticket import (
 from ..services.analytics import compute_analytics
 from ..services.auth import get_current_user, hash_password, require_role
 from ..services.email import send_engineer_assignment
+from ..services.whatsapp import send_engineer_assignment_alert
 from ..services.signing import (
     generate_field_sign_link,
     record_customer_signature_via_engineer,
@@ -241,7 +242,7 @@ def get_ticket(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     return ticket
 
 
@@ -251,7 +252,7 @@ def get_ticket_events(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     events = (
         db.query(TicketEvent)
         .filter(TicketEvent.ticket_id == ticket.id)
@@ -269,7 +270,7 @@ def acknowledge_ticket(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     return acknowledge(db, ticket, user)
 
 
@@ -281,10 +282,14 @@ def assign_ticket(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     ticket, engineer = assign_engineer(db, ticket, user, body.engineer_id)
     # Notify engineer in the background so the API returns immediately.
     background.add_task(send_engineer_assignment, ticket, engineer, user)
+    # Plus a WhatsApp ping to the engineer's phone via Twilio.
+    background.add_task(
+        send_engineer_assignment_alert, ticket.id, engineer.id, user.id
+    )
     return ticket
 
 
@@ -298,7 +303,7 @@ def self_assign_ticket(
     around /assign with engineer_id = current_user.id."""
     if user.role not in (UserRole.OWNER.value, UserRole.MANAGER.value):
         raise HTTPException(status_code=403, detail="Only Manager or Owner can self-assign")
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     ticket, _ = assign_engineer(db, ticket, user, user.id)
     return ticket
 
@@ -310,7 +315,7 @@ def patch_warranty(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     return update_warranty(db, ticket, user, body.warranty_status.upper())
 
 
@@ -322,7 +327,7 @@ def patch_severity(
     user: User = Depends(get_current_user),
 ):
     """Owner/Manager-only. Set or change ticket severity."""
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     return update_severity(db, ticket, user, body.severity.upper())
 
 
@@ -335,7 +340,7 @@ def accept_ticket(
     user: User = Depends(get_current_user),
 ):
     """Engineer claims an assigned ticket. ASSIGNED → ACCEPTED."""
-    return accept(db, _load_ticket(db, reference), user)
+    return accept(db, _load_ticket(db, reference, user), user)
 
 
 @router.post("/tickets/{reference}/start-work", response_model=TicketResponse)
@@ -345,7 +350,7 @@ def start_work_ticket(
     user: User = Depends(get_current_user),
 ):
     """Engineer begins active work. ACCEPTED → RESOLVING."""
-    return start_work(db, _load_ticket(db, reference), user)
+    return start_work(db, _load_ticket(db, reference, user), user)
 
 
 @router.post("/tickets/{reference}/resolve", response_model=TicketResponse)
@@ -360,7 +365,7 @@ def resolve_ticket(
     RESOLVING → RESOLVED. The engineer then collects both signatures (customer
     + their own) directly on this admin interface — no email link is sent.
     """
-    ticket, _sign_url = resolve(db, _load_ticket(db, reference), user, body.summary)
+    ticket, _sign_url = resolve(db, _load_ticket(db, reference, user), user, body.summary)
     return ticket
 
 
@@ -377,7 +382,7 @@ async def sign_as_customer_via_engineer(
     Only the assigned engineer can submit. After this, the engineer can
     countersign via POST /sign-engineer to close the ticket.
     """
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     image_bytes = await signature.read()
     record_customer_signature_via_engineer(
         db, ticket, user,
@@ -400,7 +405,7 @@ async def sign_as_engineer(
 
     On success: PDF is generated, ticket transitions RESOLVED → CLOSED.
     """
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     image_bytes = await signature.read()
     record_engineer_signature(
         db, ticket, user, image_bytes,
@@ -423,7 +428,7 @@ def create_field_sign_link(
     Idempotent — returns the existing link if already generated. Once
     generated, on-site signing in the admin app is locked for this ticket.
     """
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     resolution, url = generate_field_sign_link(db, ticket, user)
     return {
         "url": url,
@@ -446,7 +451,7 @@ def get_resolution_pdf_url(
     would drop that header and fail with 401. The frontend opens the returned
     URL in a new tab to download.
     """
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     if (
         user.role not in (UserRole.OWNER.value, UserRole.MANAGER.value)
         and ticket.assigned_engineer_id != user.id
@@ -494,7 +499,7 @@ def regenerate_resolution_pdf(
 
     if user.role not in (UserRole.OWNER.value, UserRole.MANAGER.value):
         raise HTTPException(status_code=403, detail="Manager or Owner only")
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     res = ticket.resolution
     # Need both signatures so the regenerated PDF carries the same legal
     # weight as the original; we never want a "draft-looking" PDF replacing
@@ -533,7 +538,7 @@ def list_notes(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     return (
         db.query(WorkNote)
         .filter(WorkNote.ticket_id == ticket.id)
@@ -555,7 +560,7 @@ async def add_note(
     `images` may be omitted entirely. Each file is validated by storage and
     persisted before the note row is committed.
     """
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     saved: list[dict] = []
     if images:
         from ..services.storage import save_uploads  # noqa: WPS433
@@ -613,7 +618,7 @@ def list_sub_engineers(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     return (
         db.query(SubEngineer)
         .filter(SubEngineer.ticket_id == ticket.id)
@@ -637,7 +642,7 @@ def list_sub_engineer_suggestions(
     minus contacts already on this ticket so the dropdown only offers new
     additions.
     """
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     city_key = ticket.city.strip()
     if not city_key:
         return []
@@ -677,7 +682,7 @@ def add_sub_engineer(
     Available after the ticket has been ACKNOWLEDGED. Caller must be the
     current assignee, Owner, or Manager.
     """
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     if ticket.status in ("OPEN",):
         raise HTTPException(
             status_code=409,
@@ -734,7 +739,7 @@ def remove_sub_engineer(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     if not _can_manage_sub_engineers(ticket, user):
         raise HTTPException(status_code=403, detail="Not allowed to remove sub-engineers on this ticket")
     sub = (
@@ -765,7 +770,7 @@ def update_sub_engineer_fee(
     Internal cost only — it does not affect the customer invoice or the
     resolution PDF. Editable by the assignee, Owner, or Manager at any status.
     """
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     if not _can_manage_sub_engineers(ticket, user):
         raise HTTPException(
             status_code=403,
@@ -909,7 +914,7 @@ def get_ticket_charges(
     _user: User = Depends(get_current_user),
 ):
     """Spares + service fee + computed totals for this ticket."""
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     return compute_charges(ticket)
 
 
@@ -930,7 +935,7 @@ def add_ticket_spare(
     `name` + `unit_price_inr` for an ad-hoc part. Only the assignee may add
     while the ticket is RESOLVING. Owner/Manager may add at any time.
     """
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     if not _can_manage_spares(ticket, user):
         if ticket.status not in ("RESOLVING",):
             raise HTTPException(
@@ -992,7 +997,7 @@ def update_ticket_spare(
     user: User = Depends(get_current_user),
 ):
     """Edit price or quantity of an existing spare line item."""
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     if not _can_manage_spares(ticket, user):
         raise HTTPException(status_code=403, detail="Not allowed to edit spares on this ticket")
     spare = (
@@ -1018,7 +1023,7 @@ def remove_ticket_spare(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     if not _can_manage_spares(ticket, user):
         raise HTTPException(status_code=403, detail="Not allowed to edit spares on this ticket")
     spare = (
@@ -1040,7 +1045,7 @@ def update_service_fee(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     if not _can_manage_spares(ticket, user):
         raise HTTPException(status_code=403, detail="Not allowed to edit charges on this ticket")
     ticket.service_fee_inr = int(body.service_fee_inr)
@@ -1070,7 +1075,7 @@ def list_shipments(
     db: Session = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     return (
         db.query(TicketShipment)
         .filter(TicketShipment.ticket_id == ticket.id)
@@ -1092,7 +1097,7 @@ def create_shipment(
     free-form `name`. Tracking ID is optional — some couriers / own-vehicle
     dispatches don't generate one. Departure timestamp defaults to now.
     """
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     if not _can_ship_parts(ticket, user):
         if ticket.status == "CLOSED":
             raise HTTPException(
@@ -1181,7 +1186,7 @@ def mark_shipment_delivered(
     Idempotent: hitting it twice returns the already-delivered shipment
     rather than erroring (avoids confusing double-clicks).
     """
-    ticket = _load_ticket(db, reference)
+    ticket = _load_ticket(db, reference, user)
     if not _can_ship_parts(ticket, user):
         if ticket.status == "CLOSED":
             raise HTTPException(
@@ -1229,8 +1234,28 @@ def mark_shipment_delivered(
 
 # --------------------------- helpers ------------------------------------ #
 
-def _load_ticket(db: Session, reference: str) -> Ticket:
+def _load_ticket(
+    db: Session, reference: str, user: Optional[User] = None
+) -> Ticket:
+    """Load a ticket by reference, applying role-based access control.
+
+    OWNER and MANAGER can read any ticket. ENGINEER can only read tickets
+    assigned to them (`ticket.assigned_engineer_id == user.id`). When the
+    user is not authorised, we return 404 rather than 403 — leaking
+    "this ticket exists but you can't see it" to engineers would let a
+    curious one enumerate the reference space.
+
+    `user` is optional only for legacy callers; all admin endpoints should
+    pass the authenticated `Depends(get_current_user)` value so the scope
+    check fires.
+    """
     t = db.query(Ticket).filter(Ticket.reference == reference.strip().upper()).one_or_none()
     if t is None:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if (
+        user is not None
+        and user.role == UserRole.ENGINEER.value
+        and t.assigned_engineer_id != user.id
+    ):
         raise HTTPException(status_code=404, detail="Ticket not found")
     return t

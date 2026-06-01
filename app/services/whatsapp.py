@@ -68,9 +68,10 @@ def _build_link(reference: str, base: str) -> str:
 
 
 def _build_plain_body(body_params: list[str]) -> str:
-    """Plain-text formatter that mirrors the original Meta-template layout.
+    """Plain-text formatter for the new-ticket alert (owners + managers).
 
-    Used when ``TWILIO_CONTENT_SID`` is blank (Sandbox flow).
+    Mirrors the original Meta-template layout. Used when ``TWILIO_CONTENT_SID``
+    is blank (Sandbox flow).
     """
     ref, where, what, severity, link = body_params
     return (
@@ -81,22 +82,79 @@ def _build_plain_body(body_params: list[str]) -> str:
     )
 
 
+def _build_assignment_body(body_params: list[str]) -> str:
+    """Plain-text formatter for the engineer-assignment alert.
+
+    Different layout than the new-ticket alert — leads with the action
+    (assigned), names the assigner, so the engineer immediately knows
+    they have a new job and who handed it to them.
+    """
+    ref, where, what, severity, assigned_by, link = body_params
+    return (
+        f"\U0001f527 *Assigned to you: {ref}* — {severity} severity\n\n"
+        f"{where}\n"
+        f"{what}\n"
+        f"Assigned by: {assigned_by}\n\n"
+        f"Open: {link}"
+    )
+
+
+def _send_one(url: str, auth, data: dict, who: tuple[str, str]) -> bool:
+    """POST one message to Twilio. Returns True on 2xx, False otherwise.
+
+    `who` is ``(phone, display_name)`` — used only for log lines.
+    """
+    phone, name = who
+    try:
+        resp = httpx.post(url, data=data, auth=auth, timeout=10.0)
+        if resp.status_code >= 400:
+            logger.warning(
+                "Twilio WhatsApp send failed for %s (%s): HTTP %s — %s",
+                name, phone, resp.status_code, resp.text[:300],
+            )
+            return False
+        return True
+    except Exception as exc:  # noqa: BLE001 — last-ditch logging
+        logger.warning(
+            "Twilio WhatsApp send raised for %s (%s): %s", name, phone, exc
+        )
+        return False
+
+
+def _twilio_configured() -> bool:
+    s = get_settings()
+    return bool(s.twilio_account_sid and s.twilio_auth_token and s.twilio_whatsapp_from)
+
+
+def _twilio_endpoint() -> tuple[str, tuple[str, str], str]:
+    """Return ``(url, basic_auth, from_address)`` for outgoing Twilio calls."""
+    s = get_settings()
+    url = TWILIO_API_URL.format(sid=s.twilio_account_sid)
+    auth = (s.twilio_account_sid, s.twilio_auth_token)
+    from_addr = s.twilio_whatsapp_from
+    if not from_addr.startswith("whatsapp:"):
+        from_addr = f"whatsapp:{from_addr}"
+    return url, auth, from_addr
+
+
+def _resolve_link_base(settings) -> str | None:
+    """Pick the smart-link host, preferring the explicit WHATSAPP_LINK_BASE."""
+    link_base = settings.whatsapp_link_base or (
+        settings.cors_origins_list[0] if settings.cors_origins_list else ""
+    )
+    return link_base or None
+
+
 def send_new_ticket_alert(ticket_id: int) -> None:
     """Background task: notify owners + managers about a new ticket on WhatsApp."""
-    settings = get_settings()
-
-    if not (
-        settings.twilio_account_sid
-        and settings.twilio_auth_token
-        and settings.twilio_whatsapp_from
-    ):
+    if not _twilio_configured():
         logger.debug(
-            "Twilio not configured — skipping WhatsApp notification for "
-            "ticket id=%s",
+            "Twilio not configured — skipping new-ticket alert for ticket id=%s",
             ticket_id,
         )
         return
 
+    settings = get_settings()
     with SessionLocal() as db:
         ticket = db.get(Ticket, ticket_id)
         if ticket is None:
@@ -111,9 +169,7 @@ def send_new_ticket_alert(ticket_id: int) -> None:
             )
             return
 
-        link_base = settings.whatsapp_link_base or (
-            settings.cors_origins_list[0] if settings.cors_origins_list else ""
-        )
+        link_base = _resolve_link_base(settings)
         if not link_base:
             logger.warning(
                 "WhatsApp notify %s: WHATSAPP_LINK_BASE not set and CORS empty; "
@@ -134,12 +190,7 @@ def send_new_ticket_alert(ticket_id: int) -> None:
             link,
         ]
 
-        url = TWILIO_API_URL.format(sid=settings.twilio_account_sid)
-        auth = (settings.twilio_account_sid, settings.twilio_auth_token)
-        from_addr = settings.twilio_whatsapp_from
-        if not from_addr.startswith("whatsapp:"):
-            from_addr = f"whatsapp:{from_addr}"
-
+        url, auth, from_addr = _twilio_endpoint()
         use_template = bool(settings.twilio_content_sid)
 
         ok = 0
@@ -161,27 +212,100 @@ def send_new_ticket_alert(ticket_id: int) -> None:
                     "To": to_addr,
                     "Body": _build_plain_body(body_params),
                 }
-
-            try:
-                resp = httpx.post(url, data=data, auth=auth, timeout=10.0)
-                if resp.status_code >= 400:
-                    logger.warning(
-                        "Twilio WhatsApp send failed for %s (%s): HTTP %s — %s",
-                        name,
-                        phone,
-                        resp.status_code,
-                        resp.text[:300],
-                    )
-                else:
-                    ok += 1
-            except Exception as exc:  # noqa: BLE001 — last-ditch logging
-                logger.warning(
-                    "Twilio WhatsApp send raised for %s (%s): %s", name, phone, exc
-                )
+            if _send_one(url, auth, data, (phone, name)):
+                ok += 1
 
         logger.info(
             "WhatsApp notify %s: sent to %d/%d staff",
             ticket.reference,
             ok,
             len(recipients),
+        )
+
+
+def send_engineer_assignment_alert(
+    ticket_id: int, engineer_id: int, assigned_by_id: int
+) -> None:
+    """Background task: WhatsApp the engineer when a ticket is assigned to them.
+
+    Fires from the `/admin/tickets/{ref}/assign` endpoint. Looks up the
+    engineer's phone, builds an assignment-flavoured message body, and
+    POSTs it through the same Twilio plumbing as `send_new_ticket_alert`.
+
+    Silent no-op when:
+      * Twilio isn't configured (env vars blank)
+      * The ticket / engineer / assigner has been deleted between
+        request handling and background dispatch
+      * The engineer has no phone on file
+      * The smart-link host (WHATSAPP_LINK_BASE) is unresolved
+    """
+    if not _twilio_configured():
+        logger.debug(
+            "Twilio not configured — skipping assignment alert for ticket id=%s",
+            ticket_id,
+        )
+        return
+
+    settings = get_settings()
+    with SessionLocal() as db:
+        ticket = db.get(Ticket, ticket_id)
+        engineer = db.get(User, engineer_id)
+        assigned_by = db.get(User, assigned_by_id)
+        if ticket is None or engineer is None:
+            logger.warning(
+                "Assignment alert: ticket id=%s or engineer id=%s missing",
+                ticket_id, engineer_id,
+            )
+            return
+
+        phone = _normalise_phone(engineer.phone)
+        if not phone:
+            logger.info(
+                "Assignment alert %s: engineer %s has no phone — skipping",
+                ticket.reference, engineer.username,
+            )
+            return
+
+        link_base = _resolve_link_base(settings)
+        if not link_base:
+            logger.warning(
+                "Assignment alert %s: WHATSAPP_LINK_BASE not set; skipping",
+                ticket.reference,
+            )
+            return
+
+        link = _build_link(ticket.reference, link_base)
+        assigned_by_label = (
+            (assigned_by.name or assigned_by.username) if assigned_by else "Manager"
+        )
+
+        # Order MUST match the assignment template's {{1}}..{{6}} placeholders
+        # if/when one is approved. The plain-body formatter uses the same order.
+        body_params = [
+            ticket.reference,
+            f"{ticket.business_name}, {ticket.city}",
+            f"{ticket.product_category} — {ticket.issue_category}",
+            (ticket.severity or "").title(),
+            assigned_by_label,
+            link,
+        ]
+
+        url, auth, from_addr = _twilio_endpoint()
+        to_addr = f"whatsapp:{phone}"
+        # We deliberately do NOT reuse `twilio_content_sid` for the
+        # assignment path — that one is the new-ticket template. Production
+        # would have a separate approved template for assignment; until
+        # then we always send plain text for this alert.
+        data = {
+            "From": from_addr,
+            "To": to_addr,
+            "Body": _build_assignment_body(body_params),
+        }
+        ok = _send_one(url, auth, data, (phone, engineer.name or engineer.username))
+        logger.info(
+            "Assignment alert %s -> %s (%s): %s",
+            ticket.reference,
+            engineer.username,
+            phone,
+            "sent" if ok else "failed",
         )
