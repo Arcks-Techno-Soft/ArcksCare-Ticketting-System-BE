@@ -911,7 +911,7 @@ def list_spare_catalog(
 def get_ticket_charges(
     reference: str,
     db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
     """Spares + service fee + computed totals for this ticket."""
     ticket = _load_ticket(db, reference, user)
@@ -1073,7 +1073,7 @@ def _can_ship_parts(ticket: Ticket, user: User) -> bool:
 def list_shipments(
     reference: str,
     db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
     ticket = _load_ticket(db, reference, user)
     return (
