@@ -49,7 +49,7 @@ class Ticket(Base):
     business_name: Mapped[str] = mapped_column(String(200))
     contact_name: Mapped[str] = mapped_column(String(120))
     phone: Mapped[str] = mapped_column(String(20), index=True)
-    email: Mapped[str] = mapped_column(String(200), index=True)
+    email: Mapped[Optional[str]] = mapped_column(String(200), nullable=True, index=True)
     business_type: Mapped[str] = mapped_column(String(60))
 
     # Address (line 1, city, state, pincode are required; line 2/3 are optional)

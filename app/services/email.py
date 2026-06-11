@@ -73,7 +73,7 @@ def _format_html(ticket: Ticket, support_url_base: Optional[str] = None) -> str:
       <h3 style="margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:0.06em;color:#737373;">Customer</h3>
       <p style="margin:0 0 4px;"><strong>{ticket.business_name}</strong> &middot; {ticket.business_type}</p>
       <p style="margin:0 0 4px;">{ticket.contact_name}</p>
-      <p style="margin:0 0 12px;">{ticket.email} &middot; {ticket.phone}</p>
+      <p style="margin:0 0 12px;">{ticket.email or "—"} &middot; {ticket.phone}</p>
 
       <h3 style="margin:16px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:0.06em;color:#737373;">Address</h3>
       <p style="margin:0 0 4px;color:#0A0A0A;">{ticket.address_line1}</p>
@@ -124,7 +124,7 @@ def _format_text(ticket: Ticket) -> str:
         "CUSTOMER",
         f"  {ticket.business_name} ({ticket.business_type})",
         f"  {ticket.contact_name}",
-        f"  {ticket.email}  {ticket.phone}",
+        f"  {ticket.email or '—'}  {ticket.phone}",
         "",
         "ADDRESS",
         address_block,
@@ -197,6 +197,13 @@ async def send_customer_sign_request(ticket: Ticket, sign_url: str) -> bool:
     """Email the customer asking them to open the signing page and sign off
     on the resolution. Failure to send is logged but never crashes the request."""
     settings = get_settings()
+    if not ticket.email:
+        logger.info(
+            "Ticket %s has no customer email; skipping signing-request email "
+            "(use the off-field sign link instead).",
+            ticket.reference,
+        )
+        return False
     if not settings.smtp_user or not settings.smtp_password:
         logger.warning(
             "SMTP not configured. Would have emailed %s to sign %s at %s",

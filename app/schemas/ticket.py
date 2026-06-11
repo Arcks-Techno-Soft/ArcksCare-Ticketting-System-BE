@@ -53,8 +53,8 @@ class SeverityIn(str, Enum):
 class TicketCreate(BaseModel):
     business_name: str = Field(min_length=2, max_length=200)
     contact_name: str = Field(min_length=2, max_length=120)
-    phone: str = Field(min_length=7, max_length=20)
-    email: EmailStr
+    phone: str = Field(min_length=10, max_length=20)
+    email: Optional[EmailStr] = None
     business_type: BusinessType
 
     # Address
@@ -80,11 +80,16 @@ class TicketCreate(BaseModel):
     @field_validator("phone")
     @classmethod
     def _normalise_phone(cls, v: str) -> str:
-        # Strip spaces, dashes, parens; keep leading + and digits.
-        cleaned = "".join(ch for ch in v if ch.isdigit() or ch == "+")
-        if not cleaned or len(cleaned.lstrip("+")) < 7:
-            raise ValueError("Enter a valid phone number")
-        return cleaned
+        # Indian mobile: keep digits only, strip a leading +91 / 91 / 0
+        # trunk prefix, then require exactly 10 digits starting 6-9.
+        digits = "".join(ch for ch in v if ch.isdigit())
+        if len(digits) == 12 and digits.startswith("91"):
+            digits = digits[2:]
+        elif len(digits) == 11 and digits.startswith("0"):
+            digits = digits[1:]
+        if len(digits) != 10 or digits[0] not in "6789":
+            raise ValueError("Enter a valid 10-digit mobile number")
+        return digits
 
     @field_validator("serial_number")
     @classmethod
@@ -143,7 +148,7 @@ class TicketResponse(BaseModel):
     reference: str
     business_name: str
     contact_name: str
-    email: EmailStr
+    email: Optional[EmailStr] = None
     phone: str
     address_line1: str
     address_line2: Optional[str] = None

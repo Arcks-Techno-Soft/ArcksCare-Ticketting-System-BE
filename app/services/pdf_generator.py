@@ -190,7 +190,7 @@ def generate_resolution_pdf(ticket: Ticket, resolution: Resolution) -> bytes:
         ("Business", f"{ticket.business_name} ({ticket.business_type})"),
         ("Contact", ticket.contact_name),
         ("Phone", ticket.phone),
-        ("Email", ticket.email),
+        ("Email", ticket.email or "—"),
         ("Service location", "<br/>".join(addr_lines)),
         ("City", ticket.city),
         ("State", ticket.state),

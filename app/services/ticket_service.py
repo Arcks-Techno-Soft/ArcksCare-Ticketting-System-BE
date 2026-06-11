@@ -51,7 +51,7 @@ def create_ticket(db: Session, payload: TicketCreate) -> Ticket:
         business_name=payload.business_name.strip(),
         contact_name=payload.contact_name.strip(),
         phone=payload.phone,
-        email=payload.email.lower(),
+        email=(payload.email or "").strip().lower() or None,
         business_type=payload.business_type.value,
         address_line1=payload.address_line1.strip(),
         address_line2=(payload.address_line2 or "").strip() or None,
