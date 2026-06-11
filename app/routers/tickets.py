@@ -65,6 +65,14 @@ async def submit_ticket(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=e.errors(),
         )
+    except ValueError as e:
+        # A field validator can surface a bare ValueError (e.g. the phone
+        # rule) that isn't always wrapped into a ValidationError depending on
+        # the pydantic-core build. Treat it as a 422 instead of a 500.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=[{"loc": ["body"], "msg": str(e), "type": "value_error"}],
+        )
 
     # 2) Dedup check before doing any disk work
     duplicate = find_recent_open_ticket(db, data.serial_number)
