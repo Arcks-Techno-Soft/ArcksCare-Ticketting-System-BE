@@ -94,9 +94,13 @@ def _bootstrap_db() -> None:
     with SessionLocal() as db:
         seed_initial_users(db)
         seed_spare_catalog(db)
-        seed_sample_tickets(db)
-        seed_district_test_data(db)
-        seed_demo_tickets(db)
+        # Fake/demo tickets are dev fixtures only. They are additive and
+        # re-create themselves even after deletion, so they must never run
+        # against a production database.
+        if not settings.is_production:
+            seed_sample_tickets(db)
+            seed_district_test_data(db)
+            seed_demo_tickets(db)
 
 
 @app.get("/")

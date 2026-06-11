@@ -2,8 +2,18 @@
 from functools import lru_cache
 from typing import List
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# The placeholder shipped in source. If production ever runs with this value,
+# anyone who can read the repo can forge an Owner JWT — so we refuse to boot.
+_DEFAULT_JWT_SECRET = "change-me-in-production-this-must-be-a-long-random-string"
+
+# Passwords we know are weak/demo defaults; never allowed for prod seeding.
+_WEAK_SEED_PASSWORDS = {
+    "owner123", "admin123", "balaji123", "ranjith123",
+    "password", "changeme", "secret", "admin", "owner",
+}
 
 
 class Settings(BaseSettings):
@@ -94,6 +104,33 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> List[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def is_production(self) -> bool:
+        """True when APP_ENV marks this as a live deployment."""
+        return self.app_env.strip().lower() in {"production", "prod", "live"}
+
+    @model_validator(mode="after")
+    def _enforce_production_security(self) -> "Settings":
+        """Fail closed: a production deploy must not run on insecure defaults.
+
+        JWT secret is required on every request, so it must always be strong in
+        prod. Seed-password strength is enforced separately, at seed time, so a
+        non-empty prod DB still boots regardless of the seed-password config.
+        """
+        if self.is_production:
+            problems: List[str] = []
+            if self.jwt_secret == _DEFAULT_JWT_SECRET:
+                problems.append("JWT_SECRET is still the placeholder default")
+            if len(self.jwt_secret) < 32:
+                problems.append("JWT_SECRET must be at least 32 characters")
+            if problems:
+                raise ValueError(
+                    "Refusing to start with APP_ENV=production:\n  - "
+                    + "\n  - ".join(problems)
+                    + "\nSet a strong JWT_SECRET (e.g. `openssl rand -hex 32`)."
+                )
+        return self
 
 
 @lru_cache

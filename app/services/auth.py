@@ -20,7 +20,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from ..config import get_settings
+from ..config import _WEAK_SEED_PASSWORDS, get_settings
 from ..database import get_db
 from ..models.user import User, UserRole
 
@@ -172,9 +172,26 @@ def seed_initial_users(db: Session) -> None:
          settings.seed_manager_name.split(" ")[0] if settings.seed_manager_name else "Manager",
          " ".join(settings.seed_manager_name.split(" ")[1:]) if settings.seed_manager_name and " " in settings.seed_manager_name else "",
          UserRole.MANAGER.value),
-        ("balaji", "balaji123", "Balaji", "Kumar", UserRole.ENGINEER.value),
-        ("ranjith", "ranjith123", "Ranjith", "Singh", UserRole.ENGINEER.value),
     ]
+    # Demo engineer logins are convenience accounts for local dev only — they
+    # carry hardcoded weak passwords and must never exist in production.
+    if not settings.is_production:
+        seeds += [
+            ("balaji", "balaji123", "Balaji", "Kumar", UserRole.ENGINEER.value),
+            ("ranjith", "ranjith123", "Ranjith", "Singh", UserRole.ENGINEER.value),
+        ]
+
+    # In production, never create an account on a known-weak password. This
+    # only triggers on a fresh (empty) prod DB; it forces strong SEED_* values.
+    if settings.is_production:
+        weak = [u for u, p, *_ in seeds if p in _WEAK_SEED_PASSWORDS]
+        if weak:
+            raise RuntimeError(
+                "Refusing to seed production accounts with weak/default "
+                f"passwords: {weak}. Set strong SEED_OWNER_PASSWORD / "
+                "SEED_MANAGER_PASSWORD in the environment."
+            )
+
     for username, password, first_name, last_name, role in seeds:
         full_name = f"{first_name} {last_name}".strip() or username
         u = User(

@@ -70,12 +70,16 @@ def _build_link(reference: str, base: str) -> str:
 def _build_plain_body(body_params: list[str]) -> str:
     """Plain-text formatter for the new-ticket alert (owners + managers).
 
-    Mirrors the original Meta-template layout. Used when ``TWILIO_CONTENT_SID``
-    is blank (Sandbox flow).
+    Severity intentionally omitted — the public raise-ticket form doesn't
+    ask the customer for it, so every customer-created ticket arrives with
+    the backend default (``MEDIUM``). Rendering that in the alert would
+    misleadingly suggest the customer rated the urgency. The assigned
+    engineer's alert keeps severity, since by that point an owner or
+    manager has had a chance to triage it.
     """
-    ref, where, what, severity, link = body_params
+    ref, where, what, link = body_params
     return (
-        f"\U0001f6e0️  *New ticket {ref}* — {severity} severity\n\n"
+        f"\U0001f6e0️  *New ticket {ref}*\n\n"
         f"{where}\n"
         f"{what}\n\n"
         f"Open: {link}"
@@ -180,13 +184,13 @@ def send_new_ticket_alert(ticket_id: int) -> None:
 
         link = _build_link(ticket.reference, link_base)
 
-        # Order MUST match the template's {{1}}..{{5}} placeholders when a
+        # Order MUST match the template's {{1}}..{{4}} placeholders when a
         # ContentSid is in use; the plain-body formatter uses the same order.
+        # Severity is intentionally omitted here — see _build_plain_body docs.
         body_params = [
             ticket.reference,
             f"{ticket.business_name}, {ticket.city}",
             f"{ticket.product_category} — {ticket.issue_category}",
-            (ticket.severity or "").title(),
             link,
         ]
 
