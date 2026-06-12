@@ -236,6 +236,48 @@ def list_tickets(
     )
 
 
+@router.get("/tickets/counts")
+def ticket_status_counts(
+    severity: Optional[str] = Query(default=None),
+    product: Optional[str] = Query(default=None),
+    search: Optional[str] = Query(default=None),
+    created_within_days: Optional[int] = Query(default=None, ge=1, le=3650),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Per-status ticket counts for the inbox filter pills.
+
+    Deliberately ignores the `status` filter: the pills must show the count for
+    every status regardless of which one is currently selected. All other
+    filters (severity, product, search, date) are applied so the counts match
+    the list the user is looking at.
+    """
+    q = db.query(Ticket.status, func.count(Ticket.id))
+    # Engineers only see tickets assigned to them.
+    if user.role == UserRole.ENGINEER.value:
+        q = q.filter(Ticket.assigned_engineer_id == user.id)
+    if severity:
+        q = q.filter(Ticket.severity == severity.upper())
+    if product:
+        q = q.filter(Ticket.product_category == product)
+    if created_within_days:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=created_within_days)
+        q = q.filter(Ticket.created_at >= cutoff)
+    if search:
+        like = f"%{search.strip()}%"
+        like_upper = f"%{search.strip().upper()}%"
+        q = q.filter(
+            or_(
+                Ticket.reference.ilike(like_upper),
+                Ticket.business_name.ilike(like),
+                Ticket.serial_number.ilike(like_upper),
+            )
+        )
+    rows = q.group_by(Ticket.status).all()
+    by_status = {status: int(count) for status, count in rows}
+    return {"by_status": by_status, "total": sum(by_status.values())}
+
+
 @router.get("/tickets/{reference}", response_model=TicketResponse)
 def get_ticket(
     reference: str,
