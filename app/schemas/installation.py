@@ -130,6 +130,7 @@ class InstallationListItem(BaseModel):
     phone: str
     invoice_number: str
     status: str
+    created_by: Optional[UserOut] = None
     assigned_engineer: Optional[UserOut] = None
     created_at: datetime
 

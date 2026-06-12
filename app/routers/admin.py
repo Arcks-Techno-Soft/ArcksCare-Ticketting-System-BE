@@ -1282,10 +1282,17 @@ def _load_ticket(
     """Load a ticket by reference, applying role-based access control.
 
     OWNER and MANAGER can read any ticket. ENGINEER can only read tickets
-    assigned to them (`ticket.assigned_engineer_id == user.id`). When the
-    user is not authorised, we return 404 rather than 403 — leaking
-    "this ticket exists but you can't see it" to engineers would let a
-    curious one enumerate the reference space.
+    assigned to them (`ticket.assigned_engineer_id == user.id`) or that they
+    raised themselves (`ticket.raised_by_id == user.id`) — the latter so an
+    engineer who opens a ticket can land on its detail page before an
+    Owner/Manager assigns it. When the user is not authorised, we return 404
+    rather than 403 — leaking "this ticket exists but you can't see it" to
+    engineers would let a curious one enumerate the reference space.
+
+    Read-only: this only governs visibility. Every state-changing action
+    (acknowledge / assign / accept / resolve / warranty / …) independently
+    enforces role or assignee in the workflow service, so being able to see a
+    self-raised ticket does not let an engineer act on it.
 
     `user` is optional only for legacy callers; all admin endpoints should
     pass the authenticated `Depends(get_current_user)` value so the scope
@@ -1298,6 +1305,7 @@ def _load_ticket(
         user is not None
         and user.role == UserRole.ENGINEER.value
         and t.assigned_engineer_id != user.id
+        and t.raised_by_id != user.id
     ):
         raise HTTPException(status_code=404, detail="Ticket not found")
     return t

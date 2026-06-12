@@ -118,9 +118,13 @@ def create_installation(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Owner / Manager creates a new installation. Optionally pre-assigns
-    it (engineer, or self-assign by passing own id)."""
-    _require_owner_or_manager(user)
+    """Any staff member (Owner / Manager / Engineer) creates a new installation.
+    Engineer-created installations land in the admin dashboard tagged with
+    `created_by`, and stay unassigned for an Owner/Manager to route. Owners and
+    Managers may optionally pre-assign (engineer, or self-assign by own id)."""
+    # Engineers cannot pre-assign — their installations go to the admin queue.
+    if user.role == UserRole.ENGINEER.value:
+        body.assigned_engineer_id = None
 
     inst = Installation(
         reference="PENDING",
