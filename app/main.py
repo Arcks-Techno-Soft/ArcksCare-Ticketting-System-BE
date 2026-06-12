@@ -80,6 +80,7 @@ def _bootstrap_db() -> None:
     from .services.signing import ensure_resolution_field_signing_columns
     from .services.spares import ensure_service_fee_column, seed_spare_catalog
     from .services.sub_engineers import ensure_sub_engineer_fee_column
+    from .services.ticket_service import ensure_raised_by_column
 
     # `create_all` adds new tables but NOT new columns on existing tables.
     # Run column migrations first so the freshly-mapped ORM matches the DB.
@@ -88,6 +89,7 @@ def _bootstrap_db() -> None:
     ensure_shipment_delivered_at_column(engine)
     ensure_resolution_field_signing_columns(engine)
     ensure_sub_engineer_fee_column(engine)
+    ensure_raised_by_column(engine)
     Base.metadata.create_all(bind=engine)
     logger.info("Database ready: %s", settings.database_url.split("@")[-1])
 

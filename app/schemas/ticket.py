@@ -165,6 +165,11 @@ class TicketResponse(BaseModel):
     status: str
     warranty_status: str
 
+    # Who raised the ticket. NULL = customer self-submitted via the public web
+    # form; set = staff member (typically an Engineer) who submitted on the
+    # customer's behalf from the app.
+    raised_by: Optional[UserOut] = None
+
     # Assignment context (Phase 2.2+) - nested user objects via the ORM relationship.
     acknowledged_by: Optional[UserOut] = None
     acknowledged_at: Optional[datetime] = None
@@ -215,6 +220,7 @@ class TicketListItem(BaseModel):
     severity: str
     status: str
     warranty_status: str
+    raised_by: Optional[UserOut] = None
     assigned_engineer: Optional[UserOut] = None
     created_at: datetime
 

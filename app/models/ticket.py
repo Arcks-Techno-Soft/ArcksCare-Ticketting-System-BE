@@ -81,6 +81,11 @@ class Ticket(Base):
         String(20), default=WarrantyStatus.UNKNOWN.value, index=True
     )
 
+    # Intake attribution. NULL when the customer self-submitted via the public
+    # web form; set to the staff user (typically an Engineer) who raised the
+    # ticket on a customer's behalf from the mobile/admin app.
+    raised_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+
     # Assignment (Phase 2.2+)
     acknowledged_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     acknowledged_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -136,6 +141,9 @@ class Ticket(Base):
         order_by="TicketEvent.created_at",
     )
     # The engineer / manager / owner who took these actions. Lazy-loaded.
+    raised_by: Mapped[Optional["User"]] = relationship(
+        foreign_keys=[raised_by_id], lazy="joined"
+    )
     acknowledged_by: Mapped[Optional["User"]] = relationship(
         foreign_keys=[acknowledged_by_id], lazy="joined"
     )

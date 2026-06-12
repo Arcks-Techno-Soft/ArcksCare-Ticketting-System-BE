@@ -4,13 +4,33 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..models.ticket import Ticket, TicketStatus
+from ..models.user import User
 from ..schemas.ticket import TicketCreate
 from ..utils.ticket_id import make_reference
+
+
+def ensure_raised_by_column(engine: Engine) -> None:
+    """Add tickets.raised_by_id if it's missing.
+
+    `create_all` adds new tables but never new columns on existing tables, so
+    this small idempotent ALTER backfills the column for databases that
+    pre-date the "who raised this ticket" feature. Works on SQLite + Postgres.
+    Existing rows get NULL (i.e. customer self-submitted).
+    """
+    insp = inspect(engine)
+    if "tickets" not in insp.get_table_names():
+        return  # Fresh DB — create_all will include the column.
+    existing = {c["name"] for c in insp.get_columns("tickets")}
+    if "raised_by_id" in existing:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE tickets ADD COLUMN raised_by_id INTEGER"))
 
 # Any not-yet-resolved status. New submissions for the same serial are blocked
 # while one of these exists within the dedup window.
@@ -45,9 +65,16 @@ def find_recent_open_ticket(db: Session, serial_number: str) -> Optional[Ticket]
     return db.execute(stmt).scalar_one_or_none()
 
 
-def create_ticket(db: Session, payload: TicketCreate) -> Ticket:
-    """Persist a new ticket and return it (with the generated reference)."""
+def create_ticket(
+    db: Session, payload: TicketCreate, raised_by: Optional[User] = None
+) -> Ticket:
+    """Persist a new ticket and return it (with the generated reference).
+
+    `raised_by` is the staff user who submitted on a customer's behalf (from
+    the mobile/admin app). Leave it None for public customer self-submissions.
+    """
     ticket = Ticket(
+        raised_by_id=raised_by.id if raised_by is not None else None,
         business_name=payload.business_name.strip(),
         contact_name=payload.contact_name.strip(),
         phone=payload.phone,

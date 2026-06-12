@@ -11,11 +11,13 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models.ticket import Ticket, TicketAttachment
+from ..models.user import User
 from ..schemas.ticket import (
     TicketCreate,
     TicketDuplicateResponse,
     TicketResponse,
 )
+from ..services.auth import get_optional_user
 from ..services.email import send_ticket_notification
 from ..services.storage import cleanup_ticket_files, save_uploads
 from ..services.whatsapp import send_new_ticket_alert
@@ -46,6 +48,7 @@ async def submit_ticket(
     payload: str = Form(..., description="JSON-encoded TicketCreate"),
     files: Optional[List[UploadFile]] = File(default=None, description="Optional attachments (JPG/PNG/GIF/MP4/MOV, <=50MB each)"),
     db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user),
 ):
     """Create a new support ticket with optional file attachments.
 
@@ -93,8 +96,15 @@ async def submit_ticket(
             ).model_dump(mode="json"),
         )
 
-    # 3) Create the ticket row
-    ticket = create_ticket(db, data)
+    # 3) Create the ticket row. If a staff member is authenticated (e.g. an
+    # engineer raising the ticket on a customer's behalf from the app), record
+    # them as the raiser so the owner/admin can see who submitted it.
+    ticket = create_ticket(db, data, raised_by=current_user)
+    if current_user is not None:
+        logger.info(
+            "Ticket %s raised by %s (%s)",
+            ticket.reference, current_user.username, current_user.role,
+        )
     logger.info("Created ticket %s for serial %s", ticket.reference, ticket.serial_number)
 
     # 4) Save uploads (if any) and link to the ticket

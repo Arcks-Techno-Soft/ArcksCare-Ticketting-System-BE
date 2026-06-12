@@ -108,6 +108,32 @@ def get_current_user(
     return user
 
 
+def get_optional_user(
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+) -> Optional[User]:
+    """Like `get_current_user`, but never raises — returns None when there's no
+    usable credential.
+
+    Used on the public ticket-intake endpoint: customers submit anonymously
+    (no token), while staff submitting on a customer's behalf send their Bearer
+    token, letting us record who raised the ticket. A bad/expired token is
+    treated the same as anonymous rather than blocking the submission.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        payload = decode_token(token)
+    except HTTPException:
+        return None
+    user_id = int(payload.get("sub", 0))
+    user = db.query(User).filter(User.id == user_id).one_or_none()
+    if user is None or not user.active:
+        return None
+    return user
+
+
 def require_role(*allowed: UserRole):
     """Dependency factory: only lets through users whose role is in `allowed`."""
     allowed_values = {r.value for r in allowed}

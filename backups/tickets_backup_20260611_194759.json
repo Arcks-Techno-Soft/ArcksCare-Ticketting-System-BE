@@ -1,0 +1,166 @@
+{
+  "ticket_events": [
+    {
+      "id": 3,
+      "ticket_id": 2,
+      "actor_user_id": 1,
+      "event_type": "ACKNOWLEDGED",
+      "from_status": "OPEN",
+      "to_status": "ACKNOWLEDGED",
+      "payload": null,
+      "note": null,
+      "created_at": "2026-06-11T19:07:28.704513+00:00"
+    },
+    {
+      "id": 4,
+      "ticket_id": 2,
+      "actor_user_id": 1,
+      "event_type": "ASSIGNED",
+      "from_status": "ACKNOWLEDGED",
+      "to_status": "ASSIGNED",
+      "payload": {
+        "engineer_id": 1,
+        "engineer_name": "Owner"
+      },
+      "note": null,
+      "created_at": "2026-06-11T19:07:30.974393+00:00"
+    },
+    {
+      "id": 5,
+      "ticket_id": 2,
+      "actor_user_id": 1,
+      "event_type": "ACCEPTED",
+      "from_status": "ASSIGNED",
+      "to_status": "ACCEPTED",
+      "payload": null,
+      "note": null,
+      "created_at": "2026-06-11T19:07:32.645922+00:00"
+    },
+    {
+      "id": 6,
+      "ticket_id": 2,
+      "actor_user_id": 1,
+      "event_type": "WARRANTY_UPDATED",
+      "from_status": null,
+      "to_status": null,
+      "payload": {
+        "from": "UNKNOWN",
+        "to": "UNDER_WARRANTY"
+      },
+      "note": null,
+      "created_at": "2026-06-11T19:33:35.154563+00:00"
+    },
+    {
+      "id": 7,
+      "ticket_id": 2,
+      "actor_user_id": 1,
+      "event_type": "RESOLVING_STARTED",
+      "from_status": "ACCEPTED",
+      "to_status": "RESOLVING",
+      "payload": null,
+      "note": null,
+      "created_at": "2026-06-11T19:33:37.549935+00:00"
+    },
+    {
+      "id": 8,
+      "ticket_id": 2,
+      "actor_user_id": 1,
+      "event_type": "RESOLVED",
+      "from_status": "RESOLVING",
+      "to_status": "RESOLVED",
+      "payload": {
+        "minutes_taken": 0.2
+      },
+      "note": null,
+      "created_at": "2026-06-11T19:33:47.569779+00:00"
+    },
+    {
+      "id": 9,
+      "ticket_id": 2,
+      "actor_user_id": 1,
+      "event_type": "FIELD_SIGN_LINK_GENERATED",
+      "from_status": null,
+      "to_status": null,
+      "payload": null,
+      "note": null,
+      "created_at": "2026-06-11T19:34:28.709263+00:00"
+    }
+  ],
+  "ticket_attachments": [],
+  "ticket_spares": [],
+  "ticket_shipment_items": [],
+  "ticket_shipments": [],
+  "resolutions": [
+    {
+      "id": 3,
+      "ticket_id": 2,
+      "customer_sign_token": "9AaA0HTwxFjfq5WzyyMn97HWMg-3f6gF4UgMlFzVYpw",
+      "customer_sign_token_expires_at": "2026-07-11T19:33:47.625034+00:00",
+      "customer_signer_name": null,
+      "customer_signature_storage_key": null,
+      "customer_signed_at": null,
+      "engineer_signature_storage_key": null,
+      "engineer_signed_at": null,
+      "engineer_signer_name": null,
+      "field_sign_link_generated_at": "2026-06-11T19:34:28.786914+00:00",
+      "signed_by_sub_engineer_id": null,
+      "pdf_storage_key": null,
+      "pdf_generated_at": null,
+      "created_at": "2026-06-11T19:33:47.569779+00:00",
+      "updated_at": "2026-06-11T19:34:28.709263+00:00"
+    }
+  ],
+  "sub_engineers": [
+    {
+      "id": 3,
+      "ticket_id": 2,
+      "name": "Demo",
+      "phone": "11111111111",
+      "location": "Bangalrke",
+      "fee_inr": null,
+      "created_by_user_id": 1,
+      "created_at": "2026-06-11T19:34:19.292399+00:00"
+    }
+  ],
+  "work_note_attachments": [],
+  "work_notes": [],
+  "tickets": [
+    {
+      "id": 2,
+      "reference": "KA-2026-00002",
+      "business_name": "Gabaabv",
+      "contact_name": "Hshanabsb",
+      "phone": "9880523535",
+      "email": "itsme3242@gmail.com",
+      "business_type": "Cafe",
+      "address_line1": "Vsbzbsb",
+      "address_line2": null,
+      "address_line3": null,
+      "city": "Bengaluru",
+      "state": "Karnataka",
+      "pincode": "560061",
+      "latitude": null,
+      "longitude": null,
+      "product_category": "Printer",
+      "serial_number": "BXBXNCNCNCN",
+      "issue_category": "Physical Damage",
+      "severity": "MEDIUM",
+      "description": "GdbsnsmalzjxbdmsjsbBznsnsnsn",
+      "preferred_contact_time": null,
+      "status": "RESOLVED",
+      "warranty_status": "UNDER_WARRANTY",
+      "acknowledged_by_id": 1,
+      "acknowledged_at": "2026-06-11T19:07:28.747090+00:00",
+      "assigned_by_id": 1,
+      "assigned_engineer_id": 1,
+      "assigned_at": "2026-06-11T19:07:31.020037+00:00",
+      "created_at": "2026-06-11T18:38:52.594951+00:00",
+      "updated_at": "2026-06-11T19:33:47.569779+00:00",
+      "accepted_at": "2026-06-11T19:07:32.688850+00:00",
+      "resolving_started_at": "2026-06-11T19:33:37.600758+00:00",
+      "resolved_at": "2026-06-11T19:33:47.621165+00:00",
+      "resolution_summary": "Hsbsnssmsbzbzbzbz",
+      "service_fee_inr": 500
+    }
+  ]
+}
