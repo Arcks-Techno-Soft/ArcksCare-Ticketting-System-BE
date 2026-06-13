@@ -109,6 +109,15 @@ def assign_engineer(db: Session, ticket: Ticket, actor: User, engineer_id: int) 
         {TicketStatus.ACKNOWLEDGED.value, TicketStatus.ASSIGNED.value, TicketStatus.ACCEPTED.value},
     )
 
+    # Warranty must be decided before a ticket can be assigned. It defaults to
+    # UNKNOWN on a freshly raised ticket; Owner/Manager set it via PATCH
+    # /warranty. Reassignment naturally passes this since warranty is already set.
+    if ticket.warranty_status == WarrantyStatus.UNKNOWN.value:
+        raise HTTPException(
+            status_code=400,
+            detail="Set the warranty status (under / out of warranty) before assigning this ticket.",
+        )
+
     prev_status = ticket.status
     is_reassign = ticket.assigned_engineer_id is not None and ticket.assigned_engineer_id != engineer.id
 
