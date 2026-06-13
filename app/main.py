@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
-from .database import Base, SessionLocal, engine
+from .database import Base, SessionLocal, engine, ensure_schema_exists
 from .routers import admin as admin_router
 from .routers import auth as auth_router
 from .routers import installations as installations_router
@@ -82,6 +82,9 @@ def _bootstrap_db() -> None:
     from .services.sub_engineers import ensure_sub_engineer_fee_column
     from .services.ticket_service import ensure_raised_by_column
 
+    # On a non-public (e.g. "test") schema, create it before anything tries to
+    # write tables into it.
+    ensure_schema_exists()
     # `create_all` adds new tables but NOT new columns on existing tables.
     # Run column migrations first so the freshly-mapped ORM matches the DB.
     ensure_service_fee_column(engine)

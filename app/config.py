@@ -32,6 +32,11 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = Field(default="sqlite:///./sk-pos-care.db")
+    # Postgres schema all tables live in. Defaults to "public" (production).
+    # Set DB_SCHEMA=test on a staging backend to run an isolated parallel copy
+    # of every table inside the SAME database — production data is untouched.
+    # Ignored on SQLite (no schema concept there).
+    db_schema: str = Field(default="public")
     # Pool sizing — keep low so a single dev process can't exhaust Supabase's
     # session-mode pooler (which caps at 15 client connections). Production
     # behind the transaction-mode pooler (port 6543) can safely raise these.

@@ -6,6 +6,7 @@ from .installation import (  # noqa: F401
     InstallationResolution,
     InstallationStatus,
 )
+from .push_token import DevicePushToken  # noqa: F401
 from .resolution import Resolution  # noqa: F401
 from .shipment import TicketShipment, TicketShipmentItem  # noqa: F401
 from .spare import SpareCatalog, TicketSpare  # noqa: F401

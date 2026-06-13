@@ -1,5 +1,5 @@
 """SQLAlchemy engine, session factory, and Base declarative class."""
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -8,6 +8,12 @@ from .config import get_settings
 settings = get_settings()
 
 _is_sqlite = settings.database_url.startswith("sqlite")
+
+# Schema isolation: on Postgres we can keep a parallel "test" copy of every
+# table inside the same database by pointing the connection's search_path at a
+# non-public schema. "public" (the default) means normal production behaviour.
+DB_SCHEMA = (settings.db_schema or "public").strip() or "public"
+_use_custom_schema = (not _is_sqlite) and DB_SCHEMA != "public"
 # Supabase exposes two poolers:
 #   * port 5432 = session mode — one client connection per Postgres backend,
 #     capped at ~15 clients per project. Easy to exhaust with restarts.
@@ -62,6 +68,37 @@ engine = create_engine(
     future=True,
     **engine_kwargs,
 )
+
+if _use_custom_schema:
+    # Every new DBAPI connection gets its search_path set so all unqualified
+    # table references resolve to our schema first, then public. This keeps the
+    # ORM models schema-agnostic — no per-table schema= needed.
+    @event.listens_for(engine, "connect")
+    def _set_search_path(dbapi_conn, _conn_record):  # noqa: ANN001
+        # Point ONLY at the target schema (not public) so this backend gets a
+        # fully isolated copy of every table. Including public would make
+        # create_all think the public tables already exist and skip creating
+        # them here. pg_catalog is always implicitly searched, so built-ins
+        # still work.
+        cur = dbapi_conn.cursor()
+        try:
+            cur.execute(f'SET search_path TO "{DB_SCHEMA}"')
+        finally:
+            cur.close()
+
+
+def ensure_schema_exists() -> None:
+    """Create the configured Postgres schema if it doesn't exist yet.
+
+    No-op on SQLite or when using the default public schema. Run this before
+    create_all so the tables land in the right place on a fresh test backend.
+    """
+    if not _use_custom_schema:
+        return
+    # Use a raw connection without the search_path event interfering.
+    with engine.begin() as conn:
+        conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{DB_SCHEMA}"'))
+
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, future=True)
 

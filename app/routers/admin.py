@@ -29,6 +29,7 @@ from ..schemas.auth import (
     CreateRosterSubEngineerRequest,
     CreateUserRequest,
     CreateUserResponse,
+    RegisterPushTokenRequest,
     ResolveRequest,
     SpareCatalogItem,
     SubEngineerOut,
@@ -40,6 +41,7 @@ from ..schemas.auth import (
     UpdateServiceFeeRequest,
     UpdateSubEngineerFeeRequest,
     UpdateTicketSpareRequest,
+    UnregisterPushTokenRequest,
     UpdateUserActiveRequest,
     UpdateWarrantyRequest,
     UserOut,
@@ -55,6 +57,7 @@ from ..schemas.ticket import (
 from ..services.analytics import compute_analytics
 from ..services.auth import get_current_user, hash_password, require_role
 from ..services.email import send_engineer_assignment
+from ..services.push import notify_ticket_assigned, register_token, unregister_token
 from ..services.whatsapp import send_engineer_assignment_alert
 from ..services.signing import (
     generate_field_sign_link,
@@ -84,6 +87,33 @@ router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 @router.get("/me", response_model=UserOut)
 def my_profile(user: User = Depends(get_current_user)):
     return user
+
+
+# --------------------------- push notifications ------------------------- #
+
+@router.post("/push/register", status_code=204)
+def register_push_token(
+    body: RegisterPushTokenRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Register this device's Expo push token for the logged-in user.
+
+    Called by the mobile app after login (and on token refresh). Idempotent.
+    """
+    register_token(db, user, body.token, body.platform)
+    return None
+
+
+@router.post("/push/unregister", status_code=204)
+def unregister_push_token(
+    body: UnregisterPushTokenRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Remove this device's token (called on logout)."""
+    unregister_token(db, body.token)
+    return None
 
 
 # --------------------------- user management (Owner-only) --------------- #
@@ -332,6 +362,8 @@ def assign_ticket(
     background.add_task(
         send_engineer_assignment_alert, ticket.id, engineer.id, user.id
     )
+    # Mobile push to the assigned engineer's device(s).
+    background.add_task(notify_ticket_assigned, ticket.id, engineer.id)
     return ticket
 
 

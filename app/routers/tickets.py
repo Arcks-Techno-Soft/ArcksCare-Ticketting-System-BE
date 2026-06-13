@@ -19,6 +19,7 @@ from ..schemas.ticket import (
 )
 from ..services.auth import get_optional_user
 from ..services.email import send_ticket_notification
+from ..services.push import notify_new_ticket
 from ..services.storage import cleanup_ticket_files, save_uploads
 from ..services.whatsapp import send_new_ticket_alert
 from ..services.ticket_service import (
@@ -122,9 +123,11 @@ async def submit_ticket(
         db.refresh(ticket)
         logger.info("Attached %d file(s) to ticket %s", len(saved), ticket.reference)
 
-    # 5) Fire-and-forget email
+    # 5) Fire-and-forget notifications (email, WhatsApp, mobile push)
     background.add_task(send_ticket_notification, ticket)
     background.add_task(send_new_ticket_alert, ticket.id)
+    # Push to owners/managers' mobile devices that a new ticket was raised.
+    background.add_task(notify_new_ticket, ticket.id)
 
     return ticket
 
