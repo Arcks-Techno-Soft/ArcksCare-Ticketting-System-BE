@@ -12,14 +12,16 @@ import logging
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
+from ..database import MIGRATION_SCHEMA, qualify
+
 logger = logging.getLogger("skposcare.shipments")
 
 
 def ensure_shipment_delivered_at_column(engine: Engine) -> None:
     insp = inspect(engine)
-    if "ticket_shipments" not in insp.get_table_names():
+    if "ticket_shipments" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
         return  # Table doesn't exist yet — create_all will include the column.
-    columns = {c["name"] for c in insp.get_columns("ticket_shipments")}
+    columns = {c["name"] for c in insp.get_columns("ticket_shipments", schema=MIGRATION_SCHEMA)}
     if "delivered_at" in columns:
         return
     # SQLite uses dynamic typing — "TIMESTAMP" stores the same value either way;
@@ -28,6 +30,6 @@ def ensure_shipment_delivered_at_column(engine: Engine) -> None:
     column_type = "TIMESTAMPTZ" if engine.dialect.name == "postgresql" else "TIMESTAMP"
     with engine.begin() as conn:
         conn.execute(
-            text(f"ALTER TABLE ticket_shipments ADD COLUMN delivered_at {column_type} NULL")
+            text(f"ALTER TABLE {qualify('ticket_shipments')} ADD COLUMN delivered_at {column_type} NULL")
         )
     logger.info("Added ticket_shipments.delivered_at column (%s)", column_type)

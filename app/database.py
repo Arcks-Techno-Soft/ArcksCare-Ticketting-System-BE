@@ -1,5 +1,5 @@
 """SQLAlchemy engine, session factory, and Base declarative class."""
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -10,10 +10,33 @@ settings = get_settings()
 _is_sqlite = settings.database_url.startswith("sqlite")
 
 # Schema isolation: on Postgres we can keep a parallel "test" copy of every
-# table inside the same database by pointing the connection's search_path at a
-# non-public schema. "public" (the default) means normal production behaviour.
+# table inside the SAME database by qualifying every table reference with a
+# non-public schema (e.g. test.tickets). "public" (the default) means normal
+# production behaviour.
+#
+# IMPORTANT: we do this with SQLAlchemy's schema_translate_map, NOT by issuing
+# `SET search_path`. A session-level SET leaks across connections on a shared
+# transaction pooler (Supabase pgbouncer/Supavisor), which once dragged
+# production into the test schema. schema_translate_map rewrites table names at
+# statement-compile time and sets NO session state, so it cannot leak.
 DB_SCHEMA = (settings.db_schema or "public").strip() or "public"
 _use_custom_schema = (not _is_sqlite) and DB_SCHEMA != "public"
+
+
+def qualify(table: str) -> str:
+    """Schema-qualified table name for RAW SQL (which schema_translate_map does
+    NOT rewrite). When DB_SCHEMA=test on Postgres, qualify("tickets") ->
+    '"test".tickets', so the idempotent ALTER-TABLE migrations can never touch
+    the public/production tables. For the default public schema (and SQLite)
+    this returns the bare name — behaviour identical to before.
+    """
+    return f'"{DB_SCHEMA}".{table}' if _use_custom_schema else table
+
+
+# Schema to pass to inspect()/get_columns() in migrations. None = the
+# connection's default (correct for SQLite and the public schema); the named
+# schema only when we're running an isolated non-public copy.
+MIGRATION_SCHEMA = DB_SCHEMA if _use_custom_schema else None
 # Supabase exposes two poolers:
 #   * port 5432 = session mode — one client connection per Postgres backend,
 #     capped at ~15 clients per project. Easy to exhaust with restarts.
@@ -66,25 +89,15 @@ engine = create_engine(
     connect_args=connect_args,
     pool_pre_ping=True,
     future=True,
+    # schema_translate_map rewrites every ORM table (declared with the default
+    # schema, i.e. None) to DB_SCHEMA at compile time. No SET is issued, so
+    # nothing leaks onto shared pooled connections. For the default "public"
+    # schema this map is empty → behaviour is byte-identical to before.
+    execution_options=(
+        {"schema_translate_map": {None: DB_SCHEMA}} if _use_custom_schema else {}
+    ),
     **engine_kwargs,
 )
-
-if _use_custom_schema:
-    # Every new DBAPI connection gets its search_path set so all unqualified
-    # table references resolve to our schema first, then public. This keeps the
-    # ORM models schema-agnostic — no per-table schema= needed.
-    @event.listens_for(engine, "connect")
-    def _set_search_path(dbapi_conn, _conn_record):  # noqa: ANN001
-        # Point ONLY at the target schema (not public) so this backend gets a
-        # fully isolated copy of every table. Including public would make
-        # create_all think the public tables already exist and skip creating
-        # them here. pg_catalog is always implicitly searched, so built-ins
-        # still work.
-        cur = dbapi_conn.cursor()
-        try:
-            cur.execute(f'SET search_path TO "{DB_SCHEMA}"')
-        finally:
-            cur.close()
 
 
 def ensure_schema_exists() -> None:
@@ -95,7 +108,6 @@ def ensure_schema_exists() -> None:
     """
     if not _use_custom_schema:
         return
-    # Use a raw connection without the search_path event interfering.
     with engine.begin() as conn:
         conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{DB_SCHEMA}"'))
 

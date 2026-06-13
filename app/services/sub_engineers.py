@@ -6,6 +6,8 @@ import logging
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
+from ..database import MIGRATION_SCHEMA, qualify
+
 logger = logging.getLogger("skposcare.sub_engineers")
 
 
@@ -17,11 +19,11 @@ def ensure_sub_engineer_fee_column(engine: Engine) -> None:
     on both SQLite (dev) and Postgres (prod).
     """
     insp = inspect(engine)
-    if "sub_engineers" not in insp.get_table_names():
+    if "sub_engineers" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
         return  # Fresh DB — create_all will include the column.
-    columns = {c["name"] for c in insp.get_columns("sub_engineers")}
+    columns = {c["name"] for c in insp.get_columns("sub_engineers", schema=MIGRATION_SCHEMA)}
     if "fee_inr" in columns:
         return
     with engine.begin() as conn:
-        conn.execute(text("ALTER TABLE sub_engineers ADD COLUMN fee_inr INTEGER"))
+        conn.execute(text(f"ALTER TABLE {qualify('sub_engineers')} ADD COLUMN fee_inr INTEGER"))
     logger.info("Added sub_engineers.fee_inr column")

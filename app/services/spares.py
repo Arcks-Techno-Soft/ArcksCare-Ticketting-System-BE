@@ -13,6 +13,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from ..database import MIGRATION_SCHEMA, qualify
 from ..models.spare import SpareCatalog
 from ..models.ticket import Ticket, WarrantyStatus
 
@@ -98,14 +99,14 @@ def ensure_service_fee_column(engine: Engine) -> None:
     isn't present. Works on both SQLite (dev) and Postgres (prod).
     """
     insp = inspect(engine)
-    if "tickets" not in insp.get_table_names():
+    if "tickets" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
         return  # Fresh DB — create_all will include the column.
-    columns = {c["name"] for c in insp.get_columns("tickets")}
+    columns = {c["name"] for c in insp.get_columns("tickets", schema=MIGRATION_SCHEMA)}
     if "service_fee_inr" in columns:
         return
     with engine.begin() as conn:
         conn.execute(
-            text("ALTER TABLE tickets ADD COLUMN service_fee_inr INTEGER NOT NULL DEFAULT 500")
+            text(f"ALTER TABLE {qualify('tickets')} ADD COLUMN service_fee_inr INTEGER NOT NULL DEFAULT 500")
         )
     logger.info("Added tickets.service_fee_inr column")
 

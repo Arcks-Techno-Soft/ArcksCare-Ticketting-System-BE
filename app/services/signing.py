@@ -405,18 +405,21 @@ def ensure_resolution_field_signing_columns(engine) -> None:
     """
     from sqlalchemy import inspect, text
 
+    from ..database import MIGRATION_SCHEMA, qualify
+
     insp = inspect(engine)
-    if "resolutions" not in insp.get_table_names():
+    if "resolutions" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
         return  # Fresh DB — create_all will include the columns.
-    columns = {c["name"] for c in insp.get_columns("resolutions")}
+    columns = {c["name"] for c in insp.get_columns("resolutions", schema=MIGRATION_SCHEMA)}
     ts_type = "TIMESTAMPTZ" if engine.dialect.name == "postgresql" else "TIMESTAMP"
+    tbl = qualify("resolutions")
     stmts: list[str] = []
     if "engineer_signer_name" not in columns:
-        stmts.append("ALTER TABLE resolutions ADD COLUMN engineer_signer_name VARCHAR(120)")
+        stmts.append(f"ALTER TABLE {tbl} ADD COLUMN engineer_signer_name VARCHAR(120)")
     if "field_sign_link_generated_at" not in columns:
-        stmts.append(f"ALTER TABLE resolutions ADD COLUMN field_sign_link_generated_at {ts_type}")
+        stmts.append(f"ALTER TABLE {tbl} ADD COLUMN field_sign_link_generated_at {ts_type}")
     if "signed_by_sub_engineer_id" not in columns:
-        stmts.append("ALTER TABLE resolutions ADD COLUMN signed_by_sub_engineer_id INTEGER")
+        stmts.append(f"ALTER TABLE {tbl} ADD COLUMN signed_by_sub_engineer_id INTEGER")
     if not stmts:
         return
     with engine.begin() as conn:

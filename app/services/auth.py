@@ -21,7 +21,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from ..config import _WEAK_SEED_PASSWORDS, get_settings
-from ..database import get_db
+from ..database import MIGRATION_SCHEMA, get_db, qualify
 from ..models.user import User, UserRole
 
 logger = logging.getLogger("sk-pos-care.auth")
@@ -158,9 +158,9 @@ def ensure_user_profile_columns(engine: Engine) -> None:
     ALTERs idempotently. Works on SQLite (dev) and Postgres (prod).
     """
     insp = inspect(engine)
-    if "users" not in insp.get_table_names():
+    if "users" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
         return  # Fresh DB — create_all will include the columns.
-    existing = {c["name"] for c in insp.get_columns("users")}
+    existing = {c["name"] for c in insp.get_columns("users", schema=MIGRATION_SCHEMA)}
     pending = [
         ("first_name", "VARCHAR(60)"),
         ("last_name", "VARCHAR(60)"),
@@ -171,7 +171,7 @@ def ensure_user_profile_columns(engine: Engine) -> None:
         for name, sql_type in pending:
             if name in existing:
                 continue
-            conn.execute(text(f"ALTER TABLE users ADD COLUMN {name} {sql_type}"))
+            conn.execute(text(f"ALTER TABLE {qualify('users')} ADD COLUMN {name} {sql_type}"))
             logger.info("Added users.%s column", name)
 
 

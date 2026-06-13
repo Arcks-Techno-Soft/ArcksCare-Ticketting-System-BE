@@ -9,6 +9,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
+from ..database import MIGRATION_SCHEMA, qualify
 from ..models.ticket import Ticket, TicketStatus
 from ..models.user import User
 from ..schemas.ticket import TicketCreate
@@ -22,15 +23,18 @@ def ensure_raised_by_column(engine: Engine) -> None:
     this small idempotent ALTER backfills the column for databases that
     pre-date the "who raised this ticket" feature. Works on SQLite + Postgres.
     Existing rows get NULL (i.e. customer self-submitted).
+
+    Scoped to DB_SCHEMA so a test backend can NEVER alter the public/production
+    table.
     """
     insp = inspect(engine)
-    if "tickets" not in insp.get_table_names():
+    if "tickets" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
         return  # Fresh DB — create_all will include the column.
-    existing = {c["name"] for c in insp.get_columns("tickets")}
+    existing = {c["name"] for c in insp.get_columns("tickets", schema=MIGRATION_SCHEMA)}
     if "raised_by_id" in existing:
         return
     with engine.begin() as conn:
-        conn.execute(text("ALTER TABLE tickets ADD COLUMN raised_by_id INTEGER"))
+        conn.execute(text(f"ALTER TABLE {qualify('tickets')} ADD COLUMN raised_by_id INTEGER"))
 
 # Any not-yet-resolved status. New submissions for the same serial are blocked
 # while one of these exists within the dedup window.
