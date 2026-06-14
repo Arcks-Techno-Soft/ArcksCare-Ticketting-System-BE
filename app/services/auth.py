@@ -137,6 +137,10 @@ def get_optional_user(
 def require_role(*allowed: UserRole):
     """Dependency factory: only lets through users whose role is in `allowed`."""
     allowed_values = {r.value for r in allowed}
+    # Legacy compatibility: OWNER is an alias for ADMIN. Any endpoint that
+    # allows ADMIN also allows OWNER, until OWNER rows are migrated to ADMIN.
+    if UserRole.ADMIN.value in allowed_values:
+        allowed_values.add(UserRole.OWNER.value)
 
     def _checker(user: User = Depends(get_current_user)) -> User:
         if user.role not in allowed_values:

@@ -268,7 +268,7 @@ def generate_field_sign_link(
     on-site signing in the admin app is locked for this ticket.
     """
     if (
-        actor.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value)
+        actor.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
         and ticket.assigned_engineer_id != actor.id
     ):
         raise HTTPException(
