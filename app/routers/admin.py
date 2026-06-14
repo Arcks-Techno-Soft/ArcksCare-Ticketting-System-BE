@@ -375,7 +375,7 @@ def self_assign_ticket(
 ):
     """Admin/Manager assigns the ticket to themselves. Convenience wrapper
     around /assign with engineer_id = current_user.id."""
-    if user.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+    if user.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
         raise HTTPException(status_code=403, detail="Only Manager or Admin can self-assign")
     ticket = _load_ticket(db, reference, user)
     ticket, _ = assign_engineer(db, ticket, user, user.id)
@@ -527,7 +527,7 @@ def get_resolution_pdf_url(
     """
     ticket = _load_ticket(db, reference, user)
     if (
-        user.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value)
+        user.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
         and ticket.assigned_engineer_id != user.id
     ):
         raise HTTPException(
@@ -571,7 +571,7 @@ def regenerate_resolution_pdf(
 
     from ..services.pdf_generator import generate_resolution_pdf  # avoid module-load cost when unused
 
-    if user.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+    if user.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
         raise HTTPException(status_code=403, detail="Manager or Admin only")
     ticket = _load_ticket(db, reference, user)
     res = ticket.resolution
@@ -654,7 +654,7 @@ async def add_note(
 
 def _can_manage_sub_engineers(ticket: Ticket, user: User) -> bool:
     """Admin, Manager, or the current assignee can manage sub-engineers."""
-    if user.role in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+    if user.role in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
         return True
     return ticket.assigned_engineer_id == user.id
 
@@ -963,7 +963,7 @@ def _can_manage_spares(ticket: Ticket, user: User) -> bool:
     """
     if ticket.status != "RESOLVING":
         return False
-    if user.role in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+    if user.role in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
         return True
     return ticket.assigned_engineer_id == user.id
 
@@ -1138,7 +1138,7 @@ def _can_ship_parts(ticket: Ticket, user: User) -> bool:
     """
     if ticket.status == "CLOSED":
         return False
-    if user.role in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+    if user.role in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
         return True
     return ticket.assigned_engineer_id == user.id
 

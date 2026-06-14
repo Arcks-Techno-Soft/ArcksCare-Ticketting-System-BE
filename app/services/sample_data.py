@@ -105,7 +105,7 @@ def seed_district_test_data(db: Session) -> None:
 
     acker = (
         db.query(User).filter(User.role == UserRole.MANAGER.value).first()
-        or db.query(User).filter(User.role == UserRole.ADMIN.value).first()
+        or db.query(User).filter(User.role.in_([UserRole.ADMIN.value, UserRole.OWNER.value])).first()
     )
 
     now = datetime.now(timezone.utc)
@@ -209,7 +209,7 @@ def seed_sample_tickets(db: Session) -> None:
         db.query(User).filter(User.role == UserRole.ENGINEER.value, User.active.is_(True)).all()
     )
     manager = db.query(User).filter(User.role == UserRole.MANAGER.value).first()
-    owner = db.query(User).filter(User.role == UserRole.ADMIN.value).first()
+    owner = db.query(User).filter(User.role.in_([UserRole.ADMIN.value, UserRole.OWNER.value])).first()
 
     if not engineers:
         logger.info("No engineers seeded — skipping sample tickets.")
@@ -450,7 +450,7 @@ def seed_demo_tickets(db: Session) -> None:
     if db.query(Ticket).filter(Ticket.reference == first_ref).first() is not None:
         return
 
-    owner = db.query(User).filter(User.role == UserRole.ADMIN.value).first()
+    owner = db.query(User).filter(User.role.in_([UserRole.ADMIN.value, UserRole.OWNER.value])).first()
     manager = (
         db.query(User).filter(User.role == UserRole.MANAGER.value).first()
         or owner

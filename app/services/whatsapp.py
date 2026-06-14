@@ -51,7 +51,7 @@ def _staff_phones(db) -> list[tuple[str, str]]:
     """Return ``[(phone, display_name), …]`` for every active ADMIN / MANAGER."""
     users = (
         db.query(User)
-        .filter(User.role.in_([UserRole.ADMIN.value, UserRole.MANAGER.value]))
+        .filter(User.role.in_([UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value]))
         .filter(User.active.is_(True))
         .all()
     )

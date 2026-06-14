@@ -114,7 +114,7 @@ def notify_new_ticket(ticket_id: int) -> None:
         staff_ids = db.execute(
             select(User.id).where(
                 User.active.is_(True),
-                User.role.in_([UserRole.ADMIN.value, UserRole.MANAGER.value]),
+                User.role.in_([UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value]),
             )
         ).scalars().all()
         tokens = _tokens_for_users(db, staff_ids)

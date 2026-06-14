@@ -70,7 +70,7 @@ def _require_assignee(installation: Installation, actor: User) -> None:
 
 def assign(db: Session, installation: Installation, actor: User, engineer_id: int) -> tuple[Installation, User]:
     """Assign or reassign. Admin/Manager only. Allowed in NEW or ASSIGNED."""
-    if actor.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+    if actor.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
         raise HTTPException(status_code=403, detail="Only Manager or Admin can assign")
 
     engineer = db.query(User).filter(User.id == engineer_id).one_or_none()
@@ -124,7 +124,7 @@ def add_note(
     from ..models.installation import InstallationNoteAttachment  # local
 
     can_add = (
-        actor.role in (UserRole.ADMIN.value, UserRole.MANAGER.value)
+        actor.role in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
         or installation.assigned_engineer_id == actor.id
     )
     if not can_add:
@@ -174,7 +174,7 @@ def update_invoice(
     signed off and baked into the generated PDF).
     """
     can_edit = (
-        actor.role in (UserRole.ADMIN.value, UserRole.MANAGER.value)
+        actor.role in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
         or installation.assigned_engineer_id == actor.id
     )
     if not can_edit:

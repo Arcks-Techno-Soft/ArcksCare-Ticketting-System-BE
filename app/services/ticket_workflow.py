@@ -70,7 +70,7 @@ def _require_status(ticket: Ticket, allowed: set[str]) -> None:
 
 def acknowledge(db: Session, ticket: Ticket, actor: User) -> Ticket:
     """OPEN → ACKNOWLEDGED. Manager/Admin only."""
-    if actor.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+    if actor.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
         raise HTTPException(status_code=403, detail="Only Manager or Admin can acknowledge")
     _require_status(ticket, {TicketStatus.OPEN.value})
     prev = ticket.status
@@ -96,7 +96,7 @@ def assign_engineer(db: Session, ticket: Ticket, actor: User, engineer_id: int) 
 
     Returns (ticket, assignee) so the caller can fire a notification email.
     """
-    if actor.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+    if actor.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
         raise HTTPException(status_code=403, detail="Only Manager or Admin can assign")
 
     engineer = db.query(User).filter(User.id == engineer_id).one_or_none()
@@ -286,7 +286,7 @@ def resolve(db: Session, ticket: Ticket, actor: User, summary: str) -> tuple[Tic
 
 def update_severity(db: Session, ticket: Ticket, actor: User, new_severity: str) -> Ticket:
     """Admin/Manager-only. Allowed at any status — triage can happen anytime."""
-    if actor.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+    if actor.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
         raise HTTPException(status_code=403, detail="Only Manager or Admin can set severity")
     if new_severity not in {s.value for s in Severity}:
         raise HTTPException(status_code=400, detail=f"Invalid severity: {new_severity}")
@@ -307,7 +307,7 @@ def update_severity(db: Session, ticket: Ticket, actor: User, new_severity: str)
 
 def update_warranty(db: Session, ticket: Ticket, actor: User, new_status: str) -> Ticket:
     """Admin or Manager can update warranty at any status."""
-    if actor.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+    if actor.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
         raise HTTPException(status_code=403, detail="Only Manager or Admin can update warranty")
     if new_status not in {w.value for w in WarrantyStatus}:
         raise HTTPException(status_code=400, detail=f"Invalid warranty status: {new_status}")

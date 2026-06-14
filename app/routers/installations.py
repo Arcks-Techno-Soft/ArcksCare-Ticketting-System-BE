@@ -47,7 +47,7 @@ router = APIRouter(prefix="/api/v1/admin/installations", tags=["installations"])
 
 
 def _require_owner_or_manager(user: User) -> None:
-    if user.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+    if user.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
         raise HTTPException(status_code=403, detail="Only Admin or Manager can do this")
 
 
@@ -334,7 +334,7 @@ def installation_pdf(
     user: User = Depends(get_current_user),
 ):
     """Short-lived link to the generated installation PDF (Admin/Manager)."""
-    if user.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+    if user.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
         raise HTTPException(status_code=403, detail="Manager or Admin only")
     inst = _load(db, reference)
     res = inst.resolution
