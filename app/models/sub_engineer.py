@@ -1,7 +1,7 @@
 """Sub-engineers — ad-hoc field contractors added to a ticket.
 
 These are NOT users in the User table — they don't log in. Just a small list
-of names + phone numbers that the assigned engineer (or Owner / Manager)
+of names + phone numbers that the assigned engineer (or Admin / Manager)
 records for traceability. The main assignee remains responsible for the
 actual ticket workflow and work-note updates.
 """

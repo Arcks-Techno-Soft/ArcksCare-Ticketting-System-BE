@@ -191,9 +191,9 @@ def seed_initial_users(db: Session) -> None:
     # (username, password, first_name, last_name, role)
     seeds = [
         (settings.seed_owner_username, settings.seed_owner_password,
-         settings.seed_owner_name.split(" ")[0] if settings.seed_owner_name else "Owner",
+         settings.seed_owner_name.split(" ")[0] if settings.seed_owner_name else "Admin",
          " ".join(settings.seed_owner_name.split(" ")[1:]) if settings.seed_owner_name and " " in settings.seed_owner_name else "",
-         UserRole.OWNER.value),
+         UserRole.ADMIN.value),
         (settings.seed_manager_username, settings.seed_manager_password,
          settings.seed_manager_name.split(" ")[0] if settings.seed_manager_name else "Manager",
          " ".join(settings.seed_manager_name.split(" ")[1:]) if settings.seed_manager_name and " " in settings.seed_manager_name else "",

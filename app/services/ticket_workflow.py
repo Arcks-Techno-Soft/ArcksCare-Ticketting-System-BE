@@ -69,9 +69,9 @@ def _require_status(ticket: Ticket, allowed: set[str]) -> None:
 # --------------------------- transitions --------------------------------- #
 
 def acknowledge(db: Session, ticket: Ticket, actor: User) -> Ticket:
-    """OPEN → ACKNOWLEDGED. Manager/Owner only."""
-    if actor.role not in (UserRole.OWNER.value, UserRole.MANAGER.value):
-        raise HTTPException(status_code=403, detail="Only Manager or Owner can acknowledge")
+    """OPEN → ACKNOWLEDGED. Manager/Admin only."""
+    if actor.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+        raise HTTPException(status_code=403, detail="Only Manager or Admin can acknowledge")
     _require_status(ticket, {TicketStatus.OPEN.value})
     prev = ticket.status
     ticket.status = TicketStatus.ACKNOWLEDGED.value
@@ -88,16 +88,16 @@ def acknowledge(db: Session, ticket: Ticket, actor: User) -> Ticket:
 
 
 def assign_engineer(db: Session, ticket: Ticket, actor: User, engineer_id: int) -> tuple[Ticket, User]:
-    """ACKNOWLEDGED → ASSIGNED (or reassign while ASSIGNED/ACCEPTED). Manager/Owner only.
+    """ACKNOWLEDGED → ASSIGNED (or reassign while ASSIGNED/ACCEPTED). Manager/Admin only.
 
-    The assignee can now be ANY active user (Engineer, Manager, or Owner) —
-    Owner/Manager may self-assign or be assigned by each other when needed.
+    The assignee can now be ANY active user (Engineer, Manager, or Admin) —
+    Admin/Manager may self-assign or be assigned by each other when needed.
     The column is still called `assigned_engineer_id` for historical reasons.
 
     Returns (ticket, assignee) so the caller can fire a notification email.
     """
-    if actor.role not in (UserRole.OWNER.value, UserRole.MANAGER.value):
-        raise HTTPException(status_code=403, detail="Only Manager or Owner can assign")
+    if actor.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+        raise HTTPException(status_code=403, detail="Only Manager or Admin can assign")
 
     engineer = db.query(User).filter(User.id == engineer_id).one_or_none()
     if engineer is None or not engineer.active:
@@ -110,7 +110,7 @@ def assign_engineer(db: Session, ticket: Ticket, actor: User, engineer_id: int) 
     )
 
     # Warranty must be decided before a ticket can be assigned. It defaults to
-    # UNKNOWN on a freshly raised ticket; Owner/Manager set it via PATCH
+    # UNKNOWN on a freshly raised ticket; Admin/Manager set it via PATCH
     # /warranty. Reassignment naturally passes this since warranty is already set.
     if ticket.warranty_status == WarrantyStatus.UNKNOWN.value:
         raise HTTPException(
@@ -148,7 +148,7 @@ def assign_engineer(db: Session, ticket: Ticket, actor: User, engineer_id: int) 
 
 def _require_assignee(ticket: Ticket, actor: User) -> None:
     """Only the user the ticket is currently assigned to (regardless of role)
-    can run accept / start / resolve / sign-as-engineer. Lets Owner or Manager
+    can run accept / start / resolve / sign-as-engineer. Lets Admin or Manager
     self-assigned tickets run the engineer workflow too."""
     if ticket.assigned_engineer_id != actor.id:
         raise HTTPException(
@@ -285,9 +285,9 @@ def resolve(db: Session, ticket: Ticket, actor: User, summary: str) -> tuple[Tic
 # --------------------------- owner/manager transitions ------------------ #
 
 def update_severity(db: Session, ticket: Ticket, actor: User, new_severity: str) -> Ticket:
-    """Owner/Manager-only. Allowed at any status — triage can happen anytime."""
-    if actor.role not in (UserRole.OWNER.value, UserRole.MANAGER.value):
-        raise HTTPException(status_code=403, detail="Only Manager or Owner can set severity")
+    """Admin/Manager-only. Allowed at any status — triage can happen anytime."""
+    if actor.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+        raise HTTPException(status_code=403, detail="Only Manager or Admin can set severity")
     if new_severity not in {s.value for s in Severity}:
         raise HTTPException(status_code=400, detail=f"Invalid severity: {new_severity}")
 
@@ -306,9 +306,9 @@ def update_severity(db: Session, ticket: Ticket, actor: User, new_severity: str)
 
 
 def update_warranty(db: Session, ticket: Ticket, actor: User, new_status: str) -> Ticket:
-    """Owner or Manager can update warranty at any status."""
-    if actor.role not in (UserRole.OWNER.value, UserRole.MANAGER.value):
-        raise HTTPException(status_code=403, detail="Only Manager or Owner can update warranty")
+    """Admin or Manager can update warranty at any status."""
+    if actor.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+        raise HTTPException(status_code=403, detail="Only Manager or Admin can update warranty")
     if new_status not in {w.value for w in WarrantyStatus}:
         raise HTTPException(status_code=400, detail=f"Invalid warranty status: {new_status}")
 

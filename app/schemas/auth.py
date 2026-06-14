@@ -22,7 +22,7 @@ class UserOut(BaseModel):
     role: str
     active: bool
     email: Optional[str] = None
-    # District an Engineer covers (NULL for Owner/Manager).
+    # District an Engineer covers (NULL for Admin/Manager).
     district: Optional[str] = None
 
 
@@ -31,7 +31,7 @@ class CreateUserRequest(BaseModel):
     last_name: str = Field(min_length=1, max_length=60)
     phone: str = Field(min_length=7, max_length=20)
     email: str = Field(min_length=3, max_length=200)
-    # Owner picks both username + password — no auto-generation. Username must
+    # Admin picks both username + password — no auto-generation. Username must
     # be 3-50 chars, lowercased a-z/0-9/dot/underscore/hyphen so it can sit in
     # URLs and logs without escaping.
     username: str = Field(min_length=3, max_length=50, pattern=r"^[a-z0-9._-]+$")

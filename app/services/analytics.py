@@ -1,4 +1,4 @@
-"""Analytics aggregations for the Owner dashboard.
+"""Analytics aggregations for the Admin dashboard.
 
 Pulled out of the router so the math stays testable and the endpoint stays
 thin. All times are computed in UTC. `days` defines the trailing window the
