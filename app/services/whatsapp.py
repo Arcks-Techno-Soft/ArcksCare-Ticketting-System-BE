@@ -1,6 +1,6 @@
 """WhatsApp notification service via Twilio.
 
-Sends a WhatsApp message to every active OWNER or MANAGER user whose
+Sends a WhatsApp message to every active ADMIN or MANAGER user whose
 ``phone`` column is populated whenever a new ticket is created.
 
 Two send paths, both hitting the same Twilio Messages REST endpoint:
@@ -48,10 +48,10 @@ def _normalise_phone(raw: str | None) -> str | None:
 
 
 def _staff_phones(db) -> list[tuple[str, str]]:
-    """Return ``[(phone, display_name), …]`` for every active OWNER / MANAGER."""
+    """Return ``[(phone, display_name), …]`` for every active ADMIN / MANAGER."""
     users = (
         db.query(User)
-        .filter(User.role.in_([UserRole.OWNER.value, UserRole.MANAGER.value]))
+        .filter(User.role.in_([UserRole.ADMIN.value, UserRole.MANAGER.value]))
         .filter(User.active.is_(True))
         .all()
     )
@@ -168,7 +168,7 @@ def send_new_ticket_alert(ticket_id: int) -> None:
         recipients = _staff_phones(db)
         if not recipients:
             logger.info(
-                "WhatsApp notify %s: no OWNER/MANAGER user has a phone set",
+                "WhatsApp notify %s: no ADMIN/MANAGER user has a phone set",
                 ticket.reference,
             )
             return

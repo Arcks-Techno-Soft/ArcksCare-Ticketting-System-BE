@@ -47,8 +47,8 @@ router = APIRouter(prefix="/api/v1/admin/installations", tags=["installations"])
 
 
 def _require_owner_or_manager(user: User) -> None:
-    if user.role not in (UserRole.OWNER.value, UserRole.MANAGER.value):
-        raise HTTPException(status_code=403, detail="Only Owner or Manager can do this")
+    if user.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+        raise HTTPException(status_code=403, detail="Only Admin or Manager can do this")
 
 
 def _make_reference(installation_id: int, year: Optional[int] = None) -> str:
@@ -120,9 +120,9 @@ def create_installation(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Any staff member (Owner / Manager / Engineer) creates a new installation.
+    """Any staff member (Admin / Manager / Engineer) creates a new installation.
     Engineer-created installations land in the admin dashboard tagged with
-    `created_by`, and stay unassigned for an Owner/Manager to route. Owners and
+    `created_by`, and stay unassigned for an Admin/Manager to route. Admins and
     Managers may optionally pre-assign (engineer, or self-assign by own id)."""
     # Engineers cannot pre-assign — their installations go to the admin queue.
     if user.role == UserRole.ENGINEER.value:
@@ -229,7 +229,7 @@ def update_invoice_endpoint(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Edit the invoice number. Assignee / Owner / Manager, before CLOSED."""
+    """Edit the invoice number. Assignee / Admin / Manager, before CLOSED."""
     inst = _load(db, reference)
     return update_invoice(db, inst, user, body.invoice_number)
 
@@ -333,9 +333,9 @@ def installation_pdf(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Short-lived link to the generated installation PDF (Owner/Manager)."""
-    if user.role not in (UserRole.OWNER.value, UserRole.MANAGER.value):
-        raise HTTPException(status_code=403, detail="Manager or Owner only")
+    """Short-lived link to the generated installation PDF (Admin/Manager)."""
+    if user.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+        raise HTTPException(status_code=403, detail="Manager or Admin only")
     inst = _load(db, reference)
     res = inst.resolution
     if res is None or not res.pdf_storage_key:

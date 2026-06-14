@@ -69,9 +69,9 @@ def _require_assignee(installation: Installation, actor: User) -> None:
 # --------------------------- transitions --------------------------------- #
 
 def assign(db: Session, installation: Installation, actor: User, engineer_id: int) -> tuple[Installation, User]:
-    """Assign or reassign. Owner/Manager only. Allowed in NEW or ASSIGNED."""
-    if actor.role not in (UserRole.OWNER.value, UserRole.MANAGER.value):
-        raise HTTPException(status_code=403, detail="Only Manager or Owner can assign")
+    """Assign or reassign. Admin/Manager only. Allowed in NEW or ASSIGNED."""
+    if actor.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+        raise HTTPException(status_code=403, detail="Only Manager or Admin can assign")
 
     engineer = db.query(User).filter(User.id == engineer_id).one_or_none()
     if engineer is None or not engineer.active:
@@ -115,7 +115,7 @@ def add_note(
     body: str,
     attachments: Optional[list[dict]] = None,
 ) -> InstallationNote:
-    """Add a work note. Allowed for the assignee, Owner, or Manager.
+    """Add a work note. Allowed for the assignee, Admin, or Manager.
     Notes can be added while the work is in progress (ASSIGNED status).
 
     Optional `attachments` is a list of file metadata dicts returned by the
@@ -124,13 +124,13 @@ def add_note(
     from ..models.installation import InstallationNoteAttachment  # local
 
     can_add = (
-        actor.role in (UserRole.OWNER.value, UserRole.MANAGER.value)
+        actor.role in (UserRole.ADMIN.value, UserRole.MANAGER.value)
         or installation.assigned_engineer_id == actor.id
     )
     if not can_add:
         raise HTTPException(
             status_code=403,
-            detail="Only the assignee, Owner, or Manager can add notes",
+            detail="Only the assignee, Admin, or Manager can add notes",
         )
     _require_status(installation, {InstallationStatus.ASSIGNED.value})
 
@@ -169,18 +169,18 @@ def update_invoice(
 ) -> Installation:
     """Edit the invoice number.
 
-    Allowed for the assignee, Owner, or Manager, at any time BEFORE the
+    Allowed for the assignee, Admin, or Manager, at any time BEFORE the
     installation is CLOSED. Once CLOSED the invoice is frozen (it has been
     signed off and baked into the generated PDF).
     """
     can_edit = (
-        actor.role in (UserRole.OWNER.value, UserRole.MANAGER.value)
+        actor.role in (UserRole.ADMIN.value, UserRole.MANAGER.value)
         or installation.assigned_engineer_id == actor.id
     )
     if not can_edit:
         raise HTTPException(
             status_code=403,
-            detail="Only the assignee, Owner, or Manager can edit the invoice number",
+            detail="Only the assignee, Admin, or Manager can edit the invoice number",
         )
     if installation.status == InstallationStatus.CLOSED.value:
         raise HTTPException(
@@ -211,7 +211,7 @@ def update_invoice(
 
 
 def close_installation(db: Session, installation: Installation, actor: User) -> tuple[Installation, str]:
-    """Engineer (or self-assigned Owner/Manager) marks installation done.
+    """Engineer (or self-assigned Admin/Manager) marks installation done.
 
     ASSIGNED → COMPLETED. Creates the InstallationResolution row + signing
     token, ready for customer + engineer signatures.

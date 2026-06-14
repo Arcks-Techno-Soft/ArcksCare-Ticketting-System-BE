@@ -6,7 +6,7 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # The placeholder shipped in source. If production ever runs with this value,
-# anyone who can read the repo can forge an Owner JWT — so we refuse to boot.
+# anyone who can read the repo can forge an Admin JWT — so we refuse to boot.
 _DEFAULT_JWT_SECRET = "change-me-in-production-this-must-be-a-long-random-string"
 
 # Passwords we know are weak/demo defaults; never allowed for prod seeding.
@@ -92,7 +92,7 @@ class Settings(BaseSettings):
     # Seed users (created on first boot if `users` table is empty)
     seed_owner_username: str = Field(default="owner")
     seed_owner_password: str = Field(default="owner123")
-    seed_owner_name: str = Field(default="Owner")
+    seed_owner_name: str = Field(default="Admin")
     seed_manager_username: str = Field(default="admin")
     seed_manager_password: str = Field(default="admin123")
     seed_manager_name: str = Field(default="Manager")

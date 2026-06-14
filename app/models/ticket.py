@@ -17,8 +17,8 @@ from ..database import Base
 
 class TicketStatus(str, Enum):
     OPEN = "OPEN"
-    ACKNOWLEDGED = "ACKNOWLEDGED"  # Manager/Owner has seen and triaged it
-    ASSIGNED = "ASSIGNED"          # Manager/Owner assigned an engineer
+    ACKNOWLEDGED = "ACKNOWLEDGED"  # Manager/Admin has seen and triaged it
+    ASSIGNED = "ASSIGNED"          # Manager/Admin assigned an engineer
     ACCEPTED = "ACCEPTED"          # Engineer accepted the assignment (separate click)
     RESOLVING = "RESOLVING"        # Engineer actively working
     RESOLVED = "RESOLVED"          # Engineer marked done; awaiting signatures + PDF
@@ -33,7 +33,7 @@ class Severity(str, Enum):
 
 
 class WarrantyStatus(str, Enum):
-    UNKNOWN = "UNKNOWN"              # Default at intake; Owner sets this later
+    UNKNOWN = "UNKNOWN"              # Default at intake; Admin sets this later
     UNDER_WARRANTY = "UNDER_WARRANTY"
     OUT_OF_WARRANTY = "OUT_OF_WARRANTY"
 
@@ -76,7 +76,7 @@ class Ticket(Base):
 
     # Workflow
     status: Mapped[str] = mapped_column(String(20), default=TicketStatus.OPEN.value, index=True)
-    # Owner sets this after triage; defaults to UNKNOWN at intake.
+    # Admin sets this after triage; defaults to UNKNOWN at intake.
     warranty_status: Mapped[str] = mapped_column(
         String(20), default=WarrantyStatus.UNKNOWN.value, index=True
     )
@@ -179,7 +179,7 @@ class TicketEvent(Base):
 class WorkNote(Base):
     """Internal engineer notes recorded while resolving a ticket.
 
-    Phase 2.3: notes are visible to all staff (Owner / Manager / Engineer)
+    Phase 2.3: notes are visible to all staff (Admin / Manager / Engineer)
     but only the assigned engineer can add new ones. They're internal-only —
     customers do NOT see these.
     """

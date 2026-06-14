@@ -116,14 +116,14 @@ def unregister_push_token(
     return None
 
 
-# --------------------------- user management (Owner-only) --------------- #
+# --------------------------- user management (Admin-only) --------------- #
 
 @router.get("/users", response_model=List[UserOut])
 def list_users(
     db: Session = Depends(get_db),
-    _user: User = Depends(require_role(UserRole.OWNER)),
+    _user: User = Depends(require_role(UserRole.ADMIN)),
 ):
-    """All staff accounts — Owner only."""
+    """All staff accounts — Admin only."""
     return db.query(User).order_by(User.created_at.desc()).all()
 
 
@@ -131,13 +131,13 @@ def list_users(
 def create_user(
     body: CreateUserRequest,
     db: Session = Depends(get_db),
-    _user: User = Depends(require_role(UserRole.OWNER)),
+    _user: User = Depends(require_role(UserRole.ADMIN)),
 ):
     """Create a new Admin (Manager) or Engineer account.
 
-    Owner explicitly chooses username + password — no auto-generation, no
+    Admin explicitly chooses username + password — no auto-generation, no
     temp-password handoff. Username must be unique across all users
-    (including OWNERs and inactive accounts). Email uniqueness is also
+    (including ADMINs and inactive accounts). Email uniqueness is also
     enforced so we never end up with two profiles tied to the same inbox.
     """
     username = body.username.strip().lower()
@@ -165,7 +165,7 @@ def create_user(
     db.add(user)
     db.commit()
     db.refresh(user)
-    logger.info("OWNER %s created user %s (%s)", _user.username, user.username, user.role)
+    logger.info("ADMIN %s created user %s (%s)", _user.username, user.username, user.role)
     return CreateUserResponse(user=UserOut.model_validate(user))
 
 
@@ -174,9 +174,9 @@ def set_user_active(
     user_id: int,
     body: UpdateUserActiveRequest,
     db: Session = Depends(get_db),
-    actor: User = Depends(require_role(UserRole.OWNER)),
+    actor: User = Depends(require_role(UserRole.ADMIN)),
 ):
-    """Activate or deactivate a user. Owners can't deactivate themselves."""
+    """Activate or deactivate a user. Admins can't deactivate themselves."""
     target = db.query(User).filter(User.id == user_id).one_or_none()
     if target is None:
         raise HTTPException(status_code=404, detail="User not found.")
@@ -188,13 +188,13 @@ def set_user_active(
     return target
 
 
-# --------------------------- analytics (Owner-only) --------------------- #
+# --------------------------- analytics (Admin-only) --------------------- #
 
 @router.get("/analytics")
 def get_analytics(
     days: int = Query(default=30, ge=7, le=365),
     db: Session = Depends(get_db),
-    _user: User = Depends(require_role(UserRole.OWNER)),
+    _user: User = Depends(require_role(UserRole.ADMIN)),
 ):
     """Aggregated metrics for the analytics dashboard."""
     return compute_analytics(db, days)
@@ -373,10 +373,10 @@ def self_assign_ticket(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Owner/Manager assigns the ticket to themselves. Convenience wrapper
+    """Admin/Manager assigns the ticket to themselves. Convenience wrapper
     around /assign with engineer_id = current_user.id."""
-    if user.role not in (UserRole.OWNER.value, UserRole.MANAGER.value):
-        raise HTTPException(status_code=403, detail="Only Manager or Owner can self-assign")
+    if user.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+        raise HTTPException(status_code=403, detail="Only Manager or Admin can self-assign")
     ticket = _load_ticket(db, reference, user)
     ticket, _ = assign_engineer(db, ticket, user, user.id)
     return ticket
@@ -400,7 +400,7 @@ def patch_severity(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Owner/Manager-only. Set or change ticket severity."""
+    """Admin/Manager-only. Set or change ticket severity."""
     ticket = _load_ticket(db, reference, user)
     return update_severity(db, ticket, user, body.severity.upper())
 
@@ -519,7 +519,7 @@ def get_resolution_pdf_url(
 ):
     """Return a short-lived URL to the resolution PDF.
 
-    Accessible to the Owner, a Manager, or the engineer the ticket is assigned
+    Accessible to the Admin, a Manager, or the engineer the ticket is assigned
     to. We return JSON rather than a redirect because the frontend calls this
     with a JWT Authorization header — browser navigation via plain <a href>
     would drop that header and fail with 401. The frontend opens the returned
@@ -527,11 +527,11 @@ def get_resolution_pdf_url(
     """
     ticket = _load_ticket(db, reference, user)
     if (
-        user.role not in (UserRole.OWNER.value, UserRole.MANAGER.value)
+        user.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value)
         and ticket.assigned_engineer_id != user.id
     ):
         raise HTTPException(
-            status_code=403, detail="Manager, Owner, or the assigned engineer only"
+            status_code=403, detail="Manager, Admin, or the assigned engineer only"
         )
     res = ticket.resolution
     if res is None or not res.pdf_storage_key:
@@ -556,7 +556,7 @@ def regenerate_resolution_pdf(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Re-render the resolution PDF in place (Owner / Manager only).
+    """Re-render the resolution PDF in place (Admin / Manager only).
 
     PDFs in storage are snapshots — once written at close-time they don't
     refresh when the template changes. This endpoint re-runs the generator
@@ -571,8 +571,8 @@ def regenerate_resolution_pdf(
 
     from ..services.pdf_generator import generate_resolution_pdf  # avoid module-load cost when unused
 
-    if user.role not in (UserRole.OWNER.value, UserRole.MANAGER.value):
-        raise HTTPException(status_code=403, detail="Manager or Owner only")
+    if user.role not in (UserRole.ADMIN.value, UserRole.MANAGER.value):
+        raise HTTPException(status_code=403, detail="Manager or Admin only")
     ticket = _load_ticket(db, reference, user)
     res = ticket.resolution
     # Need both signatures so the regenerated PDF carries the same legal
@@ -653,8 +653,8 @@ async def add_note(
 # --------------------------- sub-engineers ------------------------------ #
 
 def _can_manage_sub_engineers(ticket: Ticket, user: User) -> bool:
-    """Owner, Manager, or the current assignee can manage sub-engineers."""
-    if user.role in (UserRole.OWNER.value, UserRole.MANAGER.value):
+    """Admin, Manager, or the current assignee can manage sub-engineers."""
+    if user.role in (UserRole.ADMIN.value, UserRole.MANAGER.value):
         return True
     return ticket.assigned_engineer_id == user.id
 
@@ -754,7 +754,7 @@ def add_sub_engineer(
     in the district roster so it's reusable later.
 
     Available after the ticket has been ACKNOWLEDGED. Caller must be the
-    current assignee, Owner, or Manager.
+    current assignee, Admin, or Manager.
     """
     ticket = _load_ticket(db, reference, user)
     if ticket.status in ("OPEN",):
@@ -765,7 +765,7 @@ def add_sub_engineer(
     if not _can_manage_sub_engineers(ticket, user):
         raise HTTPException(
             status_code=403,
-            detail="Only the assignee, Owner, or Manager can add sub-engineers",
+            detail="Only the assignee, Admin, or Manager can add sub-engineers",
         )
 
     if body.roster_id is not None:
@@ -842,13 +842,13 @@ def update_sub_engineer_fee(
     """Record the fee paid to an outsourced sub-engineer for this ticket.
 
     Internal cost only — it does not affect the customer invoice or the
-    resolution PDF. Editable by the assignee, Owner, or Manager at any status.
+    resolution PDF. Editable by the assignee, Admin, or Manager at any status.
     """
     ticket = _load_ticket(db, reference, user)
     if not _can_manage_sub_engineers(ticket, user):
         raise HTTPException(
             status_code=403,
-            detail="Only the assignee, Owner, or Manager can set sub-engineer fees",
+            detail="Only the assignee, Admin, or Manager can set sub-engineer fees",
         )
     sub = (
         db.query(SubEngineer)
@@ -889,9 +889,9 @@ def list_sub_engineer_roster(
 def create_sub_engineer_roster_entry(
     body: CreateRosterSubEngineerRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role(UserRole.OWNER, UserRole.MANAGER)),
+    user: User = Depends(require_role(UserRole.ADMIN, UserRole.MANAGER)),
 ):
-    """Add a contact to the district roster. Owner / Manager only."""
+    """Add a contact to the district roster. Admin / Manager only."""
     name = body.name.strip()
     district = body.district.strip()
     existing = (
@@ -926,9 +926,9 @@ def update_sub_engineer_roster_entry(
     entry_id: int,
     body: UpdateRosterSubEngineerRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role(UserRole.OWNER, UserRole.MANAGER)),
+    user: User = Depends(require_role(UserRole.ADMIN, UserRole.MANAGER)),
 ):
-    """Edit or deactivate a roster contact. Owner / Manager only.
+    """Edit or deactivate a roster contact. Admin / Manager only.
 
     Deactivating just hides the contact from the add dropdown — sub-engineers
     already recorded on tickets are untouched.
@@ -958,12 +958,12 @@ def _can_manage_spares(ticket: Ticket, user: User) -> bool:
 
     Once the engineer marks it RESOLVED the invoice freezes — the figures
     flow into the resolution PDF and the customer's signature attests to
-    them, so post-hoc edits (even by Owner/Manager) would break that audit
+    them, so post-hoc edits (even by Admin/Manager) would break that audit
     chain.
     """
     if ticket.status != "RESOLVING":
         return False
-    if user.role in (UserRole.OWNER.value, UserRole.MANAGER.value):
+    if user.role in (UserRole.ADMIN.value, UserRole.MANAGER.value):
         return True
     return ticket.assigned_engineer_id == user.id
 
@@ -1007,7 +1007,7 @@ def add_ticket_spare(
 
     Either pass `catalog_id` to pick from the seeded catalog, or pass
     `name` + `unit_price_inr` for an ad-hoc part. Only the assignee may add
-    while the ticket is RESOLVING. Owner/Manager may add at any time.
+    while the ticket is RESOLVING. Admin/Manager may add at any time.
     """
     ticket = _load_ticket(db, reference, user)
     if not _can_manage_spares(ticket, user):
@@ -1018,7 +1018,7 @@ def add_ticket_spare(
             )
         raise HTTPException(
             status_code=403,
-            detail="Only the assigned engineer (or Owner/Manager) can edit spares.",
+            detail="Only the assigned engineer (or Admin/Manager) can edit spares.",
         )
 
     name: str
@@ -1131,14 +1131,14 @@ def update_service_fee(
 # --------------------------- spare-parts shipments ---------------------- #
 
 def _can_ship_parts(ticket: Ticket, user: User) -> bool:
-    """Owner, Manager, or the current assignee can record shipments.
+    """Admin, Manager, or the current assignee can record shipments.
 
     Allowed at any status except CLOSED — once the ticket is closed the
     work is over and logging in-transit parts retroactively is noise.
     """
     if ticket.status == "CLOSED":
         return False
-    if user.role in (UserRole.OWNER.value, UserRole.MANAGER.value):
+    if user.role in (UserRole.ADMIN.value, UserRole.MANAGER.value):
         return True
     return ticket.assigned_engineer_id == user.id
 
@@ -1180,7 +1180,7 @@ def create_shipment(
             )
         raise HTTPException(
             status_code=403,
-            detail="Only the assignee, Owner, or Manager can record shipments.",
+            detail="Only the assignee, Admin, or Manager can record shipments.",
         )
 
     departed = body.departed_at or datetime.now(timezone.utc)
@@ -1269,7 +1269,7 @@ def mark_shipment_delivered(
             )
         raise HTTPException(
             status_code=403,
-            detail="Only the assignee, Owner, or Manager can update shipments.",
+            detail="Only the assignee, Admin, or Manager can update shipments.",
         )
     shipment = (
         db.query(TicketShipment)
@@ -1313,11 +1313,11 @@ def _load_ticket(
 ) -> Ticket:
     """Load a ticket by reference, applying role-based access control.
 
-    OWNER and MANAGER can read any ticket. ENGINEER can only read tickets
+    ADMIN and MANAGER can read any ticket. ENGINEER can only read tickets
     assigned to them (`ticket.assigned_engineer_id == user.id`) or that they
     raised themselves (`ticket.raised_by_id == user.id`) — the latter so an
     engineer who opens a ticket can land on its detail page before an
-    Owner/Manager assigns it. When the user is not authorised, we return 404
+    Admin/Manager assigns it. When the user is not authorised, we return 404
     rather than 403 — leaking "this ticket exists but you can't see it" to
     engineers would let a curious one enumerate the reference space.
 

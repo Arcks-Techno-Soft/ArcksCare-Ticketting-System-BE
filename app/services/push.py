@@ -104,7 +104,7 @@ def _send_to_tokens(tokens: Sequence[str], title: str, body: str, data: dict) ->
 # request's session has closed. They take only IDs to stay session-safe.
 
 def notify_new_ticket(ticket_id: int) -> None:
-    """New ticket raised → notify all active Owners and Managers."""
+    """New ticket raised → notify all active Admins and Managers."""
     with SessionLocal() as db:
         from ..models.ticket import Ticket  # local import avoids load cycle
 
@@ -114,7 +114,7 @@ def notify_new_ticket(ticket_id: int) -> None:
         staff_ids = db.execute(
             select(User.id).where(
                 User.active.is_(True),
-                User.role.in_([UserRole.OWNER.value, UserRole.MANAGER.value]),
+                User.role.in_([UserRole.ADMIN.value, UserRole.MANAGER.value]),
             )
         ).scalars().all()
         tokens = _tokens_for_users(db, staff_ids)

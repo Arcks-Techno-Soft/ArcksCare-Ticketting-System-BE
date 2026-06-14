@@ -1,6 +1,6 @@
 """Installation workflow models.
 
-A lightweight cousin of Ticket — used when Owner/Admin starts a new product
+A lightweight cousin of Ticket — used when Admin/Admin starts a new product
 installation for a business. Only basic info is captured (no severity, no
 spares, no attachments). The signing + PDF flow mirrors ticket Resolution.
 
@@ -46,7 +46,7 @@ class Installation(Base):
         String(20), default=InstallationStatus.NEW.value, index=True
     )
 
-    # Who created it (Owner/Manager)
+    # Who created it (Admin/Manager)
     created_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     # Assignment (engineer, or owner/manager self-assignment)
     assigned_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
