@@ -164,6 +164,52 @@ def add_note(
     return note
 
 
+def update_invoice(
+    db: Session, installation: Installation, actor: User, invoice_number: str
+) -> Installation:
+    """Edit the invoice number.
+
+    Allowed for the assignee, Owner, or Manager, at any time BEFORE the
+    installation is CLOSED. Once CLOSED the invoice is frozen (it has been
+    signed off and baked into the generated PDF).
+    """
+    can_edit = (
+        actor.role in (UserRole.OWNER.value, UserRole.MANAGER.value)
+        or installation.assigned_engineer_id == actor.id
+    )
+    if not can_edit:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the assignee, Owner, or Manager can edit the invoice number",
+        )
+    if installation.status == InstallationStatus.CLOSED.value:
+        raise HTTPException(
+            status_code=409,
+            detail="The invoice number can't be changed after the installation is closed.",
+        )
+
+    new_invoice = invoice_number.strip()
+    if not new_invoice:
+        raise HTTPException(status_code=422, detail="Invoice number cannot be empty.")
+
+    prev = installation.invoice_number
+    if new_invoice == prev:
+        return installation
+
+    installation.invoice_number = new_invoice
+    _log_event(
+        db, installation=installation, actor=actor, event_type="INVOICE_UPDATED",
+        payload={"from": prev, "to": new_invoice},
+    )
+    db.commit()
+    db.refresh(installation)
+    logger.info(
+        "Installation %s invoice %s → %s by %s",
+        installation.reference, prev, new_invoice, actor.username,
+    )
+    return installation
+
+
 def close_installation(db: Session, installation: Installation, actor: User) -> tuple[Installation, str]:
     """Engineer (or self-assigned Owner/Manager) marks installation done.
 

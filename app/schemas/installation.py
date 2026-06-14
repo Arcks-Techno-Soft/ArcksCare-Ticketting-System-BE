@@ -38,6 +38,10 @@ class InstallationAssignRequest(BaseModel):
     engineer_id: int
 
 
+class InstallationInvoiceUpdate(BaseModel):
+    invoice_number: str = Field(min_length=1, max_length=80)
+
+
 class InstallationNoteIn(BaseModel):
     body: str = Field(min_length=2, max_length=4000)
 
