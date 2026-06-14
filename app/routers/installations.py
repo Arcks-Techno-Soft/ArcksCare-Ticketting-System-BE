@@ -21,6 +21,7 @@ from ..schemas.installation import (
     InstallationAssignRequest,
     InstallationCreate,
     InstallationEventOut,
+    InstallationInvoiceUpdate,
     InstallationListItem,
     InstallationListPage,
     InstallationNoteIn,
@@ -36,6 +37,7 @@ from ..services.installation_workflow import (
     add_note,
     assign,
     close_installation,
+    update_invoice,
 )
 from ..services.storage import get_storage
 
@@ -216,6 +218,20 @@ def self_assign_endpoint(
     inst = _load(db, reference)
     inst, _ = assign(db, inst, user, user.id)
     return inst
+
+
+# --------------------------- invoice ------------------------------------ #
+
+@router.patch("/{reference}/invoice", response_model=InstallationOut)
+def update_invoice_endpoint(
+    reference: str,
+    body: InstallationInvoiceUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Edit the invoice number. Assignee / Owner / Manager, before CLOSED."""
+    inst = _load(db, reference)
+    return update_invoice(db, inst, user, body.invoice_number)
 
 
 # --------------------------- notes -------------------------------------- #
