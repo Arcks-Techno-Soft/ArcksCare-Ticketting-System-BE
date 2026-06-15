@@ -14,7 +14,7 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Optional
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..database import Base
@@ -52,6 +52,20 @@ class Installation(Base):
     invoice_document_uploaded_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+    # Site address (line 1, city, state, pincode required at the API; line 2/3
+    # optional). Mirrors the ticket address fields. Columns are nullable so the
+    # idempotent migration can backfill installations that pre-date the feature.
+    address_line1: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    address_line2: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    address_line3: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    city: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    state: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    pincode: Mapped[Optional[str]] = mapped_column(String(10), nullable=True, index=True)
+
+    # Optional geo — populated when a pin is dropped on the map (web).
+    latitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    longitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     status: Mapped[str] = mapped_column(
         String(20), default=InstallationStatus.NEW.value, index=True

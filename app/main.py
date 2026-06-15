@@ -86,6 +86,7 @@ def _bootstrap_db() -> None:
     from .services.sub_engineers import ensure_sub_engineer_fee_column
     from .services.ticket_service import ensure_raised_by_column
     from .services.installation_workflow import (
+        ensure_installation_address_columns,
         ensure_installation_invoice_document_columns,
     )
 
@@ -102,6 +103,7 @@ def _bootstrap_db() -> None:
     ensure_sub_engineer_fee_column(engine)
     ensure_raised_by_column(engine)
     ensure_installation_invoice_document_columns(engine)
+    ensure_installation_address_columns(engine)
     Base.metadata.create_all(bind=engine)
     logger.info("Database ready: %s", settings.database_url.split("@")[-1])
 

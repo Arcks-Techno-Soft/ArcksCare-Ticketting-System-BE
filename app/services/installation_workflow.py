@@ -38,6 +38,18 @@ _INVOICE_DOC_COLUMNS = {
     "invoice_document_uploaded_at": "TIMESTAMP WITH TIME ZONE",
 }
 
+# Site-address columns. Same idempotent-ALTER rationale as above.
+_ADDRESS_COLUMNS = {
+    "address_line1": "VARCHAR(200)",
+    "address_line2": "VARCHAR(200)",
+    "address_line3": "VARCHAR(200)",
+    "city": "VARCHAR(80)",
+    "state": "VARCHAR(80)",
+    "pincode": "VARCHAR(10)",
+    "latitude": "DOUBLE PRECISION",
+    "longitude": "DOUBLE PRECISION",
+}
+
 
 def ensure_installation_invoice_document_columns(engine: Engine) -> None:
     """Add installations.invoice_document_* columns if any are missing."""
@@ -54,6 +66,24 @@ def ensure_installation_invoice_document_columns(engine: Engine) -> None:
         for name, ddl in missing.items():
             if is_sqlite and ddl.startswith("TIMESTAMP"):
                 ddl = "TIMESTAMP"
+            conn.execute(text(f"ALTER TABLE {qualify('installations')} ADD COLUMN {name} {ddl}"))
+
+
+def ensure_installation_address_columns(engine: Engine) -> None:
+    """Add installations site-address columns if any are missing."""
+    insp = inspect(engine)
+    if "installations" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # Fresh DB — create_all will include the columns.
+    existing = {c["name"] for c in insp.get_columns("installations", schema=MIGRATION_SCHEMA)}
+    missing = {k: v for k, v in _ADDRESS_COLUMNS.items() if k not in existing}
+    if not missing:
+        return
+    # SQLite has no DOUBLE PRECISION type name; use its REAL affinity instead.
+    is_sqlite = engine.dialect.name == "sqlite"
+    with engine.begin() as conn:
+        for name, ddl in missing.items():
+            if is_sqlite and ddl == "DOUBLE PRECISION":
+                ddl = "REAL"
             conn.execute(text(f"ALTER TABLE {qualify('installations')} ADD COLUMN {name} {ddl}"))
 
 
@@ -318,6 +348,50 @@ def remove_invoice_document(db: Session, installation: Installation, actor: User
     db.commit()
     db.refresh(installation)
     logger.info("Installation %s invoice document removed by %s", installation.reference, actor.username)
+    return installation
+
+
+def update_address(
+    db: Session, installation: Installation, actor: User, data: dict
+) -> Installation:
+    """Edit the site address / location.
+
+    Same gate as the invoice number: assignee / Admin / Manager, before CLOSED.
+    `data` carries the already-validated address fields (line1..3, city, state,
+    pincode, latitude, longitude); blank optional fields arrive as None.
+    """
+    can_edit = (
+        actor.role in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
+        or installation.assigned_engineer_id == actor.id
+    )
+    if not can_edit:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the assignee, Admin, or Manager can edit the address",
+        )
+    if installation.status == InstallationStatus.CLOSED.value:
+        raise HTTPException(
+            status_code=409,
+            detail="The address can't be changed after the installation is closed.",
+        )
+
+    for field in (
+        "address_line1", "address_line2", "address_line3",
+        "city", "state", "pincode", "latitude", "longitude",
+    ):
+        setattr(installation, field, data.get(field))
+
+    _log_event(
+        db, installation=installation, actor=actor, event_type="ADDRESS_UPDATED",
+        payload={
+            "city": installation.city,
+            "state": installation.state,
+            "pincode": installation.pincode,
+        },
+    )
+    db.commit()
+    db.refresh(installation)
+    logger.info("Installation %s address updated by %s", installation.reference, actor.username)
     return installation
 
 
