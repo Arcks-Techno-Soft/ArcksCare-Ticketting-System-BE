@@ -108,7 +108,7 @@ class Ticket(Base):
     # NOTE: added post-Phase-2.4 — a startup ALTER fills this in for existing
     # SQLite/Postgres rows that pre-date the column. Always treat the value as
     # already-present here.
-    service_fee_inr: Mapped[int] = mapped_column(Integer, nullable=False, server_default="500", default=500)
+    service_fee_inr: Mapped[int] = mapped_column(Integer, nullable=False, server_default="800", default=800)
 
     attachments: Mapped[List["TicketAttachment"]] = relationship(
         back_populates="ticket", cascade="all, delete-orphan"

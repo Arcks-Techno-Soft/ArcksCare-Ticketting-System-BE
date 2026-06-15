@@ -319,6 +319,9 @@ def _invoice_block(ticket: Ticket, body_style):
     charges = compute_charges(ticket)
     items = charges["items"]
     is_warranty = bool(charges["is_warranty"])
+    # Both UNDER_WARRANTY and AMC are covered (billed at ₹0); label the waiver
+    # accurately so an AMC ticket doesn't read as "Free (warranty)".
+    covered_label = "AMC" if charges.get("warranty_status") == "AMC" else "warranty"
 
     col_widths = [86 * mm, 18 * mm, 30 * mm, 40 * mm]
     header_color = colors.HexColor("#737373")
@@ -377,7 +380,7 @@ def _invoice_block(ticket: Ticket, body_style):
         if is_warranty:
             subtotal_html = (
                 f"<font color='#A3A3A3'><strike>{_fmt_inr(charges['spares_list_price_total_inr'])}</strike></font> "
-                f"<font color='#047857'>Free (warranty)</font>"
+                f"<font color='#047857'>Free ({covered_label})</font>"
             )
         else:
             subtotal_html = f"<b>{_fmt_inr(charges['spares_billable_total_inr'])}</b>"
@@ -390,7 +393,7 @@ def _invoice_block(ticket: Ticket, body_style):
     if is_warranty:
         service_fee_html = (
             f"<font color='#A3A3A3'><strike>{_fmt_inr(charges['service_fee_inr'])}</strike></font> "
-            f"<font color='#047857'>Free (warranty)</font>"
+            f"<font color='#047857'>Free ({covered_label})</font>"
         )
     else:
         service_fee_html = _fmt_inr(charges["service_fee_inr"])
@@ -432,7 +435,7 @@ def _invoice_block(ticket: Ticket, body_style):
     if is_warranty:
         totals_block.append(Spacer(1, 3 * mm))
         totals_block.append(Paragraph(
-            "<font color='#737373' size='8.5'><i>This service is covered under warranty — "
+            f"<font color='#737373' size='8.5'><i>This service is covered ({covered_label}) — "
             "spare parts and the service fee are both billed at zero. Reference prices "
             "shown for transparency.</i></font>",
             body_style,

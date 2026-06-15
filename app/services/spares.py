@@ -106,7 +106,7 @@ def ensure_service_fee_column(engine: Engine) -> None:
         return
     with engine.begin() as conn:
         conn.execute(
-            text(f"ALTER TABLE {qualify('tickets')} ADD COLUMN service_fee_inr INTEGER NOT NULL DEFAULT 500")
+            text(f"ALTER TABLE {qualify('tickets')} ADD COLUMN service_fee_inr INTEGER NOT NULL DEFAULT 800")
         )
     logger.info("Added tickets.service_fee_inr column")
 
