@@ -30,6 +30,11 @@ MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
 ALLOWED_EXT = {"jpg", "jpeg", "png", "gif", "mp4", "mov"}
 ALLOWED_MIME_PREFIX = ("image/", "video/")
 
+# Invoice documents accept PDFs in addition to images (no video).
+ALLOWED_DOC_EXT = {"pdf", "jpg", "jpeg", "png"}
+ALLOWED_DOC_MIME = {"application/pdf"}
+ALLOWED_DOC_MIME_PREFIX = ("image/",)
+
 # Public URL prefix that maps to LOCAL_UPLOAD_DIR (must match main.py mount).
 LOCAL_URL_PREFIX = "/uploads"
 
@@ -57,6 +62,22 @@ def validate_upload(file: UploadFile) -> None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Unsupported file type: {file.filename}",
+        )
+
+
+def validate_document_upload(file: UploadFile) -> None:
+    """Like validate_upload but for invoice documents — PDF or image only."""
+    ext = _ext_of(file.filename or "")
+    mime = (file.content_type or "").lower()
+    ok = (
+        ext in ALLOWED_DOC_EXT
+        or mime in ALLOWED_DOC_MIME
+        or mime.startswith(ALLOWED_DOC_MIME_PREFIX)
+    )
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Only PDF or image files are allowed (got {file.filename}).",
         )
 
 
@@ -335,6 +356,20 @@ def save_uploads(files: List[UploadFile], ticket_reference: str) -> List[dict]:
         safe = _safe_filename(f.filename or "file")
         out.append(storage.save(f, ticket_reference, safe))
     return out
+
+
+def save_document(file: UploadFile, reference: str, *, prefix: str = "invoice") -> dict:
+    """Validate + persist a single document (PDF/image) via the active backend.
+
+    The stored filename is prefixed (e.g. "invoice-…") so it's recognisable in
+    the file listing alongside worksite photos. Returns the metadata dict the
+    caller stores on the row.
+    """
+    validate_document_upload(file)
+    safe = _safe_filename(file.filename or "document")
+    if prefix and not safe.startswith(f"{prefix}-"):
+        safe = f"{prefix}-{safe}"
+    return get_storage().save(file, reference, safe)
 
 
 def cleanup_ticket_files(ticket_reference: str) -> None:

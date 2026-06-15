@@ -42,6 +42,17 @@ class Installation(Base):
 
     invoice_number: Mapped[str] = mapped_column(String(80), index=True)
 
+    # Optional uploaded invoice document (PDF or image). A single file —
+    # uploading again replaces it. The storage key is resolved to a viewable
+    # URL on the way out (see InstallationInvoiceDocumentOut).
+    invoice_document_filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    invoice_document_content_type: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    invoice_document_size_bytes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    invoice_document_storage_key: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    invoice_document_uploaded_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     status: Mapped[str] = mapped_column(
         String(20), default=InstallationStatus.NEW.value, index=True
     )
@@ -86,6 +97,23 @@ class Installation(Base):
     assigned_engineer: Mapped[Optional["User"]] = relationship(
         foreign_keys=[assigned_engineer_id], lazy="joined"
     )
+
+    @property
+    def invoice_document(self) -> Optional[dict]:
+        """Shape the invoice-document columns into a single object (or None).
+
+        Read by InstallationInvoiceDocumentOut, which resolves `storage_url`
+        into a viewable link via the active storage backend.
+        """
+        if not self.invoice_document_storage_key:
+            return None
+        return {
+            "filename": self.invoice_document_filename,
+            "content_type": self.invoice_document_content_type,
+            "size_bytes": self.invoice_document_size_bytes,
+            "storage_url": self.invoice_document_storage_key,
+            "uploaded_at": self.invoice_document_uploaded_at,
+        }
 
 
 class InstallationNote(Base):
