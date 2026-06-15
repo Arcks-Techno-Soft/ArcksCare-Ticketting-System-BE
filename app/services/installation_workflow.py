@@ -10,8 +10,11 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import HTTPException, status
+from sqlalchemy import inspect, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from ..database import MIGRATION_SCHEMA, qualify
 from ..models.installation import (
     Installation,
     InstallationEvent,
@@ -21,6 +24,40 @@ from ..models.installation import (
 from ..models.user import User, UserRole
 
 logger = logging.getLogger("skposcare.installation_workflow")
+
+
+# Site-address columns. `create_all` adds new tables but never new columns on
+# existing tables, so this idempotent ALTER backfills them for databases that
+# pre-date the feature. Scoped to DB_SCHEMA so a test backend can never touch
+# the public/production table. Works on SQLite + Postgres.
+_ADDRESS_COLUMNS = {
+    "address_line1": "VARCHAR(200)",
+    "address_line2": "VARCHAR(200)",
+    "address_line3": "VARCHAR(200)",
+    "city": "VARCHAR(80)",
+    "state": "VARCHAR(80)",
+    "pincode": "VARCHAR(10)",
+    "latitude": "DOUBLE PRECISION",
+    "longitude": "DOUBLE PRECISION",
+}
+
+
+def ensure_installation_address_columns(engine: Engine) -> None:
+    """Add installations site-address columns if any are missing."""
+    insp = inspect(engine)
+    if "installations" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # Fresh DB — create_all will include the columns.
+    existing = {c["name"] for c in insp.get_columns("installations", schema=MIGRATION_SCHEMA)}
+    missing = {k: v for k, v in _ADDRESS_COLUMNS.items() if k not in existing}
+    if not missing:
+        return
+    # SQLite has no DOUBLE PRECISION type name; use its REAL affinity instead.
+    is_sqlite = engine.dialect.name == "sqlite"
+    with engine.begin() as conn:
+        for name, ddl in missing.items():
+            if is_sqlite and ddl == "DOUBLE PRECISION":
+                ddl = "REAL"
+            conn.execute(text(f"ALTER TABLE {qualify('installations')} ADD COLUMN {name} {ddl}"))
 
 
 def _log_event(
@@ -207,6 +244,50 @@ def update_invoice(
         "Installation %s invoice %s → %s by %s",
         installation.reference, prev, new_invoice, actor.username,
     )
+    return installation
+
+
+def update_address(
+    db: Session, installation: Installation, actor: User, data: dict
+) -> Installation:
+    """Edit the site address / location.
+
+    Same gate as the invoice number: assignee / Admin / Manager, before CLOSED.
+    `data` carries the already-validated address fields (line1..3, city, state,
+    pincode, latitude, longitude); blank optional fields arrive as None.
+    """
+    can_edit = (
+        actor.role in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
+        or installation.assigned_engineer_id == actor.id
+    )
+    if not can_edit:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the assignee, Admin, or Manager can edit the address",
+        )
+    if installation.status == InstallationStatus.CLOSED.value:
+        raise HTTPException(
+            status_code=409,
+            detail="The address can't be changed after the installation is closed.",
+        )
+
+    for field in (
+        "address_line1", "address_line2", "address_line3",
+        "city", "state", "pincode", "latitude", "longitude",
+    ):
+        setattr(installation, field, data.get(field))
+
+    _log_event(
+        db, installation=installation, actor=actor, event_type="ADDRESS_UPDATED",
+        payload={
+            "city": installation.city,
+            "state": installation.state,
+            "pincode": installation.pincode,
+        },
+    )
+    db.commit()
+    db.refresh(installation)
+    logger.info("Installation %s address updated by %s", installation.reference, actor.username)
     return installation
 
 

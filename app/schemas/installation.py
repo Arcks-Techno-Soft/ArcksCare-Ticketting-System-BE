@@ -7,7 +7,37 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .auth import UserOut
 
 
-class InstallationCreate(BaseModel):
+class InstallationAddressUpdate(BaseModel):
+    """Site address / location. Line 1, city, state and pincode are required;
+    line 2/3 and the geo coordinates are optional. Mirrors TicketCreate."""
+
+    address_line1: str = Field(min_length=3, max_length=200)
+    address_line2: Optional[str] = Field(default=None, max_length=200)
+    address_line3: Optional[str] = Field(default=None, max_length=200)
+    city: str = Field(min_length=2, max_length=80)
+    state: str = Field(min_length=2, max_length=80)
+    pincode: str = Field(min_length=4, max_length=10)
+    latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+
+    @field_validator("pincode")
+    @classmethod
+    def _normalise_pincode(cls, v: str) -> str:
+        cleaned = "".join(ch for ch in v if ch.isdigit())
+        if len(cleaned) < 4:
+            raise ValueError("Enter a valid pincode")
+        return cleaned
+
+    @field_validator("address_line2", "address_line3", mode="before")
+    @classmethod
+    def _empty_string_to_none(cls, v):
+        # Treat blank strings as None for optional address lines.
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+
+class InstallationCreate(InstallationAddressUpdate):
     business_name: str = Field(min_length=2, max_length=200)
     business_category: str = Field(min_length=2, max_length=80)
     contact_name: str = Field(min_length=2, max_length=120)
@@ -112,6 +142,15 @@ class InstallationOut(BaseModel):
     invoice_number: str
     status: str
 
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    address_line3: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
     created_by: Optional[UserOut] = None
     assigned_by: Optional[UserOut] = None
     assigned_engineer: Optional[UserOut] = None
@@ -134,6 +173,8 @@ class InstallationListItem(BaseModel):
     phone: str
     invoice_number: str
     status: str
+    city: Optional[str] = None
+    state: Optional[str] = None
     created_by: Optional[UserOut] = None
     assigned_engineer: Optional[UserOut] = None
     created_at: datetime

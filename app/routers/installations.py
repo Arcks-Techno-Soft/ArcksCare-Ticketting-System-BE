@@ -18,6 +18,7 @@ from ..models.installation import (
 )
 from ..models.user import User, UserRole
 from ..schemas.installation import (
+    InstallationAddressUpdate,
     InstallationAssignRequest,
     InstallationCreate,
     InstallationEventOut,
@@ -37,6 +38,7 @@ from ..services.installation_workflow import (
     add_note,
     assign,
     close_installation,
+    update_address,
     update_invoice,
 )
 from ..services.storage import get_storage
@@ -136,6 +138,14 @@ def create_installation(
         phone=body.phone,
         email=(body.email or "").strip().lower() or None,
         invoice_number=body.invoice_number.strip(),
+        address_line1=body.address_line1.strip(),
+        address_line2=body.address_line2,
+        address_line3=body.address_line3,
+        city=body.city.strip(),
+        state=body.state.strip(),
+        pincode=body.pincode,
+        latitude=body.latitude,
+        longitude=body.longitude,
         status=InstallationStatus.NEW.value,
         created_by_id=user.id,
     )
@@ -232,6 +242,20 @@ def update_invoice_endpoint(
     """Edit the invoice number. Assignee / Admin / Manager, before CLOSED."""
     inst = _load(db, reference)
     return update_invoice(db, inst, user, body.invoice_number)
+
+
+# --------------------------- address ------------------------------------ #
+
+@router.patch("/{reference}/address", response_model=InstallationOut)
+def update_address_endpoint(
+    reference: str,
+    body: InstallationAddressUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Edit the site address / location. Assignee / Admin / Manager, before CLOSED."""
+    inst = _load(db, reference)
+    return update_address(db, inst, user, body.model_dump())
 
 
 # --------------------------- notes -------------------------------------- #
