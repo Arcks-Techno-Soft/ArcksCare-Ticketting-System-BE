@@ -85,6 +85,9 @@ def _bootstrap_db() -> None:
     )
     from .services.sub_engineers import ensure_sub_engineer_fee_column
     from .services.ticket_service import ensure_raised_by_column
+    from .services.installation_workflow import (
+        ensure_installation_invoice_document_columns,
+    )
 
     # On a non-public (e.g. "test") schema, create it before anything tries to
     # write tables into it.
@@ -98,6 +101,7 @@ def _bootstrap_db() -> None:
     ensure_resolution_field_signing_columns(engine)
     ensure_sub_engineer_fee_column(engine)
     ensure_raised_by_column(engine)
+    ensure_installation_invoice_document_columns(engine)
     Base.metadata.create_all(bind=engine)
     logger.info("Database ready: %s", settings.database_url.split("@")[-1])
 

@@ -37,9 +37,11 @@ from ..services.installation_workflow import (
     add_note,
     assign,
     close_installation,
+    remove_invoice_document,
+    set_invoice_document,
     update_invoice,
 )
-from ..services.storage import get_storage
+from ..services.storage import get_storage, save_document
 
 logger = logging.getLogger("skposcare.installations")
 
@@ -232,6 +234,36 @@ def update_invoice_endpoint(
     """Edit the invoice number. Assignee / Admin / Manager, before CLOSED."""
     inst = _load(db, reference)
     return update_invoice(db, inst, user, body.invoice_number)
+
+
+# --------------------------- invoice document --------------------------- #
+
+@router.post("/{reference}/invoice-document", response_model=InstallationOut)
+async def upload_invoice_document(
+    reference: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Attach (or replace) the invoice document — a PDF or image.
+
+    Allowed for the assignee / Admin / Manager at any time before the
+    installation is CLOSED. Uploading again replaces the existing document.
+    """
+    inst = _load(db, reference)
+    meta = save_document(file, inst.reference)
+    return set_invoice_document(db, inst, user, meta)
+
+
+@router.delete("/{reference}/invoice-document", response_model=InstallationOut)
+def delete_invoice_document(
+    reference: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Remove the uploaded invoice document. Assignee / Admin / Manager, before CLOSED."""
+    inst = _load(db, reference)
+    return remove_invoice_document(db, inst, user)
 
 
 # --------------------------- notes -------------------------------------- #

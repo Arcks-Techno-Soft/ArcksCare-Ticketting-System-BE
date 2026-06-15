@@ -65,6 +65,28 @@ class InstallationNoteAttachmentOut(BaseModel):
             return v
 
 
+class InstallationInvoiceDocumentOut(BaseModel):
+    """The optional uploaded invoice document. `storage_url` is resolved into a
+    viewable link (signed URL on Supabase, /uploads path locally)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    filename: str
+    content_type: str
+    size_bytes: int
+    storage_url: str
+    uploaded_at: Optional[datetime] = None
+
+    @field_validator("storage_url", mode="after")
+    @classmethod
+    def _resolve_storage_url(cls, v: str) -> str:
+        from ..services.storage import get_storage  # noqa: WPS433
+        try:
+            return get_storage().public_url(v)
+        except Exception:
+            return v
+
+
 class InstallationNoteOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -110,6 +132,7 @@ class InstallationOut(BaseModel):
     phone: str
     email: Optional[str] = None
     invoice_number: str
+    invoice_document: Optional[InstallationInvoiceDocumentOut] = None
     status: str
 
     created_by: Optional[UserOut] = None
