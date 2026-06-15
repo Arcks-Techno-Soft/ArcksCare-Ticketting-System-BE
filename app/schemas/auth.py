@@ -82,7 +82,7 @@ class AssignEngineerRequest(BaseModel):
 
 
 class UpdateWarrantyRequest(BaseModel):
-    warranty_status: str  # UNDER_WARRANTY / OUT_OF_WARRANTY / UNKNOWN
+    warranty_status: str  # UNKNOWN / UNDER_WARRANTY / OUT_OF_WARRANTY / AMC
 
 
 class UpdateSeverityRequest(BaseModel):

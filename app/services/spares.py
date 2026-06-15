@@ -116,12 +116,15 @@ def ensure_service_fee_column(engine: Engine) -> None:
 def compute_charges(ticket: Ticket) -> Dict[str, object]:
     """Return the billing summary for a ticket.
 
-    Warranty rule: under warranty, BOTH the spare line items and the service
-    fee bill at zero. The stored values are still surfaced (so the customer
-    sees the goodwill amount) but `*_billable_inr` and `grand_total_inr`
-    reflect what they actually owe.
+    Warranty rule: when the ticket is covered (under warranty or AMC), BOTH the
+    spare line items and the service fee bill at zero. The stored values are
+    still surfaced (so the customer sees the goodwill amount) but
+    `*_billable_inr` and `grand_total_inr` reflect what they actually owe.
     """
-    is_warranty = ticket.warranty_status == WarrantyStatus.UNDER_WARRANTY.value
+    is_warranty = ticket.warranty_status in (
+        WarrantyStatus.UNDER_WARRANTY.value,
+        WarrantyStatus.AMC.value,
+    )
     line_items = []
     spares_list_price_total = 0
     for s in ticket.spares:

@@ -632,6 +632,7 @@ def _warranty_label(value: str) -> str:
     return {
         "UNDER_WARRANTY": "In warranty",
         "OUT_OF_WARRANTY": "Out of warranty",
+        "AMC": "AMC",
         "UNKNOWN": "Not specified",
     }.get(value, value)
 

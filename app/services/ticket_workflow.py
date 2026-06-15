@@ -115,7 +115,7 @@ def assign_engineer(db: Session, ticket: Ticket, actor: User, engineer_id: int) 
     if ticket.warranty_status == WarrantyStatus.UNKNOWN.value:
         raise HTTPException(
             status_code=400,
-            detail="Set the warranty status (under / out of warranty) before assigning this ticket.",
+            detail="Set the warranty status (under warranty / out of warranty / AMC) before assigning this ticket.",
         )
 
     prev_status = ticket.status

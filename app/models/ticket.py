@@ -36,6 +36,7 @@ class WarrantyStatus(str, Enum):
     UNKNOWN = "UNKNOWN"              # Default at intake; Admin sets this later
     UNDER_WARRANTY = "UNDER_WARRANTY"
     OUT_OF_WARRANTY = "OUT_OF_WARRANTY"
+    AMC = "AMC"                     # Annual Maintenance Contract
 
 
 class Ticket(Base):
