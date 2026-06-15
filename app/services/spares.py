@@ -7,10 +7,12 @@ idempotent: rows with the same (product_category, name) won't be duplicated.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Dict, List, Tuple
 
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from ..database import MIGRATION_SCHEMA, qualify
@@ -111,26 +113,68 @@ def ensure_service_fee_column(engine: Engine) -> None:
     logger.info("Added tickets.service_fee_inr column")
 
 
+def _has_column(engine: Engine, table: str, column: str) -> bool:
+    cols = {c["name"] for c in inspect(engine).get_columns(table, schema=MIGRATION_SCHEMA)}
+    return column in cols
+
+
 def ensure_service_type_column(engine: Engine) -> None:
     """Add tickets.service_type if it's missing.
 
-    Same idempotent startup-ALTER pattern as ensure_service_fee_column.
+    Same idempotent startup-ALTER pattern as ensure_service_fee_column, but
+    hardened for zero-downtime deploys: ADD COLUMN needs an ACCESS EXCLUSIVE
+    lock on `tickets`, and the previous instance keeps serving (holding row
+    locks) until the new one is healthy. So we bound the lock wait and retry
+    into a gap instead of blocking until the server statement_timeout cancels
+    us and crashes startup. The DDL itself is metadata-only on PostgreSQL 11+
+    (constant default), so it's instant once the lock is acquired.
+
     Existing rows backfill to SITE_VISIT (the default service mode).
     """
     insp = inspect(engine)
     if "tickets" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
         return  # Fresh DB — create_all will include the column.
-    columns = {c["name"] for c in insp.get_columns("tickets", schema=MIGRATION_SCHEMA)}
-    if "service_type" in columns:
+    if _has_column(engine, "tickets", "service_type"):
         return
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                f"ALTER TABLE {qualify('tickets')} "
-                f"ADD COLUMN service_type VARCHAR(20) NOT NULL DEFAULT 'SITE_VISIT'"
+
+    ddl = (
+        f"ALTER TABLE {qualify('tickets')} "
+        f"ADD COLUMN service_type VARCHAR(20) NOT NULL DEFAULT 'SITE_VISIT'"
+    )
+    is_pg = engine.dialect.name == "postgresql"
+    attempts = 6
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with engine.begin() as conn:
+                if is_pg:
+                    # Fail fast if the table is busy (so we retry into a gap),
+                    # and don't let a short server statement_timeout cancel the
+                    # metadata change once we do hold the lock.
+                    conn.execute(text("SET LOCAL lock_timeout = '4s'"))
+                    conn.execute(text("SET LOCAL statement_timeout = '120s'"))
+                conn.execute(text(ddl))
+            logger.info("Added tickets.service_type column")
+            return
+        except OperationalError as exc:
+            last_exc = exc
+            # A concurrent instance may have added it while we waited.
+            if _has_column(engine, "tickets", "service_type"):
+                logger.info("tickets.service_type already present (added concurrently)")
+                return
+            logger.warning(
+                "ensure_service_type_column attempt %d/%d failed (table busy?): %s",
+                attempt, attempts, exc,
             )
-        )
-    logger.info("Added tickets.service_type column")
+            if attempt < attempts:
+                time.sleep(3 * attempt)
+    if _has_column(engine, "tickets", "service_type"):
+        return
+    raise RuntimeError(
+        "Could not add tickets.service_type after retries — the table stayed "
+        "locked (likely a long-running transaction). Re-deploy or run the "
+        "ALTER manually during a quiet window."
+    ) from last_exc
 
 
 # --------------------------- charge calculation -------------------------- #
