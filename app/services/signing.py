@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..models.resolution import Resolution
 from ..models.shipment import TicketShipment
-from ..models.ticket import Ticket, TicketStatus
+from ..models.ticket import ServiceType, Ticket, TicketStatus
 from ..models.user import User, UserRole
 from .pdf_generator import generate_resolution_pdf
 from .storage import get_storage
@@ -45,6 +45,16 @@ def _field_sign_url(token: str) -> str:
     """Public URL the sub-engineer opens to collect both signatures off-site."""
     base = get_settings().customer_sign_url_base.rstrip("/")
     return f"{base}/field-sign/{token}"
+
+
+def _reject_if_remote(ticket: Ticket) -> None:
+    """Signatures and PDFs don't apply to remote-support tickets — they close
+    in a single Resolve & Close step with no resolution document."""
+    if ticket.service_type == ServiceType.REMOTE_SUPPORT.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Signatures and the resolution PDF don't apply to remote-support tickets.",
+        )
 
 
 def _require_resolution(ticket: Ticket) -> Resolution:
@@ -137,6 +147,7 @@ def record_customer_signature_via_engineer(
     """Variant used when the engineer is on-site collecting the customer's
     signature on their own device. Same effect as record_customer_signature
     but with a role check (only the assigned engineer can capture it)."""
+    _reject_if_remote(ticket)
     if ticket.assigned_engineer_id != actor.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -196,6 +207,7 @@ def record_engineer_signature(
     content_type: str = "image/png",
 ) -> Resolution:
     """Engineer signs after the customer has signed; closes the ticket and generates the PDF."""
+    _reject_if_remote(ticket)
     if ticket.assigned_engineer_id != actor.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -267,6 +279,7 @@ def generate_field_sign_link(
     Idempotent — calling it again returns the existing link. Once generated,
     on-site signing in the admin app is locked for this ticket.
     """
+    _reject_if_remote(ticket)
     if (
         actor.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
         and ticket.assigned_engineer_id != actor.id

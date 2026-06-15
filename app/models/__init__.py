@@ -12,6 +12,7 @@ from .shipment import TicketShipment, TicketShipmentItem  # noqa: F401
 from .spare import SpareCatalog, TicketSpare  # noqa: F401
 from .sub_engineer import SubEngineer  # noqa: F401
 from .ticket import (  # noqa: F401
+    ServiceType,
     Severity,
     Ticket,
     TicketAttachment,

@@ -17,6 +17,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from ..models.ticket import (
+    ServiceType,
     Severity,
     Ticket,
     TicketEvent,
@@ -242,10 +243,15 @@ def add_work_note(
     return note
 
 
-def resolve(db: Session, ticket: Ticket, actor: User, summary: str) -> tuple[Ticket, str]:
-    """RESOLVING → RESOLVED. Creates the Resolution row + customer signing token.
+def resolve(db: Session, ticket: Ticket, actor: User, summary: str) -> tuple[Ticket, Optional[str]]:
+    """RESOLVING → RESOLVED for site visits; RESOLVING → CLOSED for remote support.
 
-    Returns (ticket, customer_sign_url) so the router can fire the customer email.
+    Site visits create a Resolution row + customer signing token and wait for
+    signatures. Remote-support tickets need no signatures or PDF, so they close
+    in this single step.
+
+    Returns (ticket, customer_sign_url). The URL is None for remote support
+    (and the router skips the customer "please sign" email).
     """
     # Local import to avoid module-load cycle.
     from .signing import create_resolution_with_token  # noqa: WPS433
@@ -253,8 +259,9 @@ def resolve(db: Session, ticket: Ticket, actor: User, summary: str) -> tuple[Tic
     _require_assignee(ticket, actor)
     _require_status(ticket, {TicketStatus.RESOLVING.value})
 
+    is_remote = ticket.service_type == ServiceType.REMOTE_SUPPORT.value
+
     prev = ticket.status
-    ticket.status = TicketStatus.RESOLVED.value
     ticket.resolved_at = datetime.now(timezone.utc)
     ticket.resolution_summary = summary.strip()
 
@@ -266,6 +273,22 @@ def resolve(db: Session, ticket: Ticket, actor: User, summary: str) -> tuple[Tic
             start = start.replace(tzinfo=timezone.utc)
         mins = round((ticket.resolved_at - start).total_seconds() / 60.0, 1)
 
+    if is_remote:
+        # No signatures / PDF — resolve and close in one step.
+        ticket.status = TicketStatus.CLOSED.value
+        _log_event(
+            db, ticket=ticket, actor=actor, event_type="RESOLVED",
+            from_status=prev, to_status=ticket.status,
+            payload={"minutes_taken": mins, "service_type": ticket.service_type},
+            note="Remote support — resolved and closed without signatures.",
+        )
+        db.commit()
+        db.refresh(ticket)
+        logger.info("Ticket %s resolved + closed (remote) by %s in %s min",
+                    ticket.reference, actor.username, mins)
+        return ticket, None
+
+    ticket.status = TicketStatus.RESOLVED.value
     _log_event(
         db, ticket=ticket, actor=actor, event_type="RESOLVED",
         from_status=prev, to_status=ticket.status,
@@ -323,4 +346,39 @@ def update_warranty(db: Session, ticket: Ticket, actor: User, new_status: str) -
     db.commit()
     db.refresh(ticket)
     logger.info("Ticket %s warranty %s → %s by %s", ticket.reference, prev, new_status, actor.username)
+    return ticket
+
+
+def set_service_type(db: Session, ticket: Ticket, actor: User, new_type: str) -> Ticket:
+    """Admin/Manager or the assigned engineer can switch the service mode.
+
+    Locked once the ticket is RESOLVED or CLOSED — by then the mode has already
+    decided whether signatures/PDF were required, so changing it would be
+    inconsistent with the finalised record.
+    """
+    is_staff = actor.role in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
+    if not is_staff and ticket.assigned_engineer_id != actor.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Only Admin/Manager or the assigned engineer can change the service type",
+        )
+    if new_type not in {s.value for s in ServiceType}:
+        raise HTTPException(status_code=400, detail=f"Invalid service type: {new_type}")
+    if ticket.status in (TicketStatus.RESOLVED.value, TicketStatus.CLOSED.value):
+        raise HTTPException(
+            status_code=400,
+            detail="Service type can't be changed once the ticket is resolved or closed.",
+        )
+
+    prev = ticket.service_type
+    if prev == new_type:
+        return ticket  # no-op
+    ticket.service_type = new_type
+    _log_event(
+        db, ticket=ticket, actor=actor, event_type="SERVICE_TYPE_UPDATED",
+        payload={"from": prev, "to": new_type},
+    )
+    db.commit()
+    db.refresh(ticket)
+    logger.info("Ticket %s service type %s → %s by %s", ticket.reference, prev, new_type, actor.username)
     return ticket

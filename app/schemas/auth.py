@@ -89,6 +89,10 @@ class UpdateSeverityRequest(BaseModel):
     severity: str  # LOW / MEDIUM / HIGH / CRITICAL
 
 
+class UpdateServiceTypeRequest(BaseModel):
+    service_type: str  # SITE_VISIT / REMOTE_SUPPORT
+
+
 class TicketEventOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

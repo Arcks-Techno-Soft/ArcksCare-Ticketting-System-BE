@@ -164,6 +164,7 @@ class TicketResponse(BaseModel):
     severity: str
     status: str
     warranty_status: str
+    service_type: str
 
     # Who raised the ticket. NULL = customer self-submitted via the public web
     # form; set = staff member (typically an Engineer) who submitted on the
@@ -220,6 +221,7 @@ class TicketListItem(BaseModel):
     severity: str
     status: str
     warranty_status: str
+    service_type: str
     raised_by: Optional[UserOut] = None
     assigned_engineer: Optional[UserOut] = None
     created_at: datetime

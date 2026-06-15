@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from ..database import MIGRATION_SCHEMA, qualify
 from ..models.spare import SpareCatalog
-from ..models.ticket import Ticket, WarrantyStatus
+from ..models.ticket import ServiceType, Ticket, WarrantyStatus
 
 logger = logging.getLogger("skposcare.spares")
 
@@ -111,6 +111,28 @@ def ensure_service_fee_column(engine: Engine) -> None:
     logger.info("Added tickets.service_fee_inr column")
 
 
+def ensure_service_type_column(engine: Engine) -> None:
+    """Add tickets.service_type if it's missing.
+
+    Same idempotent startup-ALTER pattern as ensure_service_fee_column.
+    Existing rows backfill to SITE_VISIT (the default service mode).
+    """
+    insp = inspect(engine)
+    if "tickets" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # Fresh DB — create_all will include the column.
+    columns = {c["name"] for c in insp.get_columns("tickets", schema=MIGRATION_SCHEMA)}
+    if "service_type" in columns:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                f"ALTER TABLE {qualify('tickets')} "
+                f"ADD COLUMN service_type VARCHAR(20) NOT NULL DEFAULT 'SITE_VISIT'"
+            )
+        )
+    logger.info("Added tickets.service_type column")
+
+
 # --------------------------- charge calculation -------------------------- #
 
 def compute_charges(ticket: Ticket) -> Dict[str, object]:
@@ -120,11 +142,18 @@ def compute_charges(ticket: Ticket) -> Dict[str, object]:
     spare line items and the service fee bill at zero. The stored values are
     still surfaced (so the customer sees the goodwill amount) but
     `*_billable_inr` and `grand_total_inr` reflect what they actually owe.
+
+    Remote-support rule: spare parts don't apply to remote tickets, so they
+    never bill — only the service fee carries through. (Guards block adding
+    spares to a remote ticket; this also neutralises any spares left over from
+    before a switch to remote.)
     """
     is_warranty = ticket.warranty_status in (
         WarrantyStatus.UNDER_WARRANTY.value,
         WarrantyStatus.AMC.value,
     )
+    is_remote = ticket.service_type == ServiceType.REMOTE_SUPPORT.value
+    spares_billable = not is_warranty and not is_remote
     line_items = []
     spares_list_price_total = 0
     for s in ticket.spares:
@@ -138,10 +167,10 @@ def compute_charges(ticket: Ticket) -> Dict[str, object]:
                 "unit_price_inr": int(s.unit_price_inr),
                 "quantity": int(s.quantity),
                 "line_total_inr": line_total,
-                "billable": not is_warranty,
+                "billable": spares_billable,
             }
         )
-    spares_billable_total = 0 if is_warranty else spares_list_price_total
+    spares_billable_total = spares_list_price_total if spares_billable else 0
     service_fee = int(ticket.service_fee_inr or 0)
     service_fee_billable = 0 if is_warranty else service_fee
     return {

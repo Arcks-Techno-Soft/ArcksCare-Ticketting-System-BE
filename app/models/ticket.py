@@ -39,6 +39,14 @@ class WarrantyStatus(str, Enum):
     AMC = "AMC"                     # Annual Maintenance Contract
 
 
+class ServiceType(str, Enum):
+    """How the ticket is serviced. SITE_VISIT is the default; REMOTE_SUPPORT
+    is handled without a physical visit, so it needs no signatures, PDF, or
+    spare parts and closes in a single Resolve & Close step."""
+    SITE_VISIT = "SITE_VISIT"
+    REMOTE_SUPPORT = "REMOTE_SUPPORT"
+
+
 class Ticket(Base):
     __tablename__ = "tickets"
 
@@ -80,6 +88,12 @@ class Ticket(Base):
     # Admin sets this after triage; defaults to UNKNOWN at intake.
     warranty_status: Mapped[str] = mapped_column(
         String(20), default=WarrantyStatus.UNKNOWN.value, index=True
+    )
+    # Service delivery mode. Defaults to SITE_VISIT; an Admin/Manager or the
+    # assigned engineer can switch it to REMOTE_SUPPORT, which skips
+    # signatures, PDF and spare parts.
+    service_type: Mapped[str] = mapped_column(
+        String(20), default=ServiceType.SITE_VISIT.value, server_default=ServiceType.SITE_VISIT.value, index=True
     )
 
     # Intake attribution. NULL when the customer self-submitted via the public

@@ -18,7 +18,7 @@ from ..database import get_db
 from ..models.shipment import TicketShipment, TicketShipmentItem
 from ..models.spare import SpareCatalog, TicketSpare
 from ..models.sub_engineer import SubEngineer, SubEngineerRoster
-from ..models.ticket import Ticket, TicketEvent, WorkNote
+from ..models.ticket import ServiceType, Ticket, TicketEvent, WorkNote
 from ..models.user import User, UserRole
 from ..schemas.auth import (
     AddSubEngineerRequest,
@@ -37,6 +37,7 @@ from ..schemas.auth import (
     TicketEventOut,
     TicketSpareOut,
     UpdateRosterSubEngineerRequest,
+    UpdateServiceTypeRequest,
     UpdateSeverityRequest,
     UpdateServiceFeeRequest,
     UpdateSubEngineerFeeRequest,
@@ -72,6 +73,7 @@ from ..services.ticket_workflow import (
     add_work_note,
     assign_engineer,
     resolve,
+    set_service_type,
     start_work,
     update_severity,
     update_warranty,
@@ -403,6 +405,19 @@ def patch_severity(
     """Admin/Manager-only. Set or change ticket severity."""
     ticket = _load_ticket(db, reference, user)
     return update_severity(db, ticket, user, body.severity.upper())
+
+
+@router.patch("/tickets/{reference}/service-type", response_model=TicketResponse)
+def patch_service_type(
+    reference: str,
+    body: UpdateServiceTypeRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Admin/Manager or the assigned engineer can switch between SITE_VISIT and
+    REMOTE_SUPPORT. Remote support skips signatures, PDF and spare parts."""
+    ticket = _load_ticket(db, reference, user)
+    return set_service_type(db, ticket, user, body.service_type.upper())
 
 
 # --------------------------- engineer actions --------------------------- #
@@ -1010,6 +1025,11 @@ def add_ticket_spare(
     while the ticket is RESOLVING. Admin/Manager may add at any time.
     """
     ticket = _load_ticket(db, reference, user)
+    if ticket.service_type == ServiceType.REMOTE_SUPPORT.value:
+        raise HTTPException(
+            status_code=409,
+            detail="Spare parts don't apply to remote-support tickets.",
+        )
     if not _can_manage_spares(ticket, user):
         if ticket.status not in ("RESOLVING",):
             raise HTTPException(
@@ -1172,6 +1192,11 @@ def create_shipment(
     dispatches don't generate one. Departure timestamp defaults to now.
     """
     ticket = _load_ticket(db, reference, user)
+    if ticket.service_type == ServiceType.REMOTE_SUPPORT.value:
+        raise HTTPException(
+            status_code=409,
+            detail="Spare-parts shipments don't apply to remote-support tickets.",
+        )
     if not _can_ship_parts(ticket, user):
         if ticket.status == "CLOSED":
             raise HTTPException(
