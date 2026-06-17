@@ -13,11 +13,17 @@ from .auth import AdditionalEngineerOut, SubEngineerOut, UserOut
 
 
 class BusinessType(str, Enum):
+    """Canonical/suggested business categories shown in the dropdown. Kept in
+    sync with the frontend BUSINESS_TYPES list. NOTE: `business_type` on
+    TicketCreate is a free string (not enum-validated) so that customers who
+    pick "Other" can type their own category — these are the suggested values."""
     RESTAURANT = "Restaurant"
     HOTEL = "Hotel"
     RETAIL_STORE = "Retail Store"
     CAFE = "Cafe"
     CLOUD_KITCHEN = "Cloud Kitchen"
+    FOOD_COURT = "Food Court"
+    ICE_CREAM_PARLOUR = "Ice Cream Parlour"
     PARTNER = "Partner"
     OTHER = "Other"
 
@@ -56,7 +62,10 @@ class TicketCreate(BaseModel):
     contact_name: str = Field(min_length=2, max_length=120)
     phone: str = Field(min_length=10, max_length=20)
     email: Optional[EmailStr] = None
-    business_type: BusinessType
+    # Free text (not enum-validated): the form offers BusinessType as suggestions,
+    # but a customer who picks "Other" types their own category, which is stored
+    # here verbatim.
+    business_type: str = Field(min_length=2, max_length=60)
 
     # Address
     address_line1: str = Field(min_length=3, max_length=200)
@@ -77,6 +86,14 @@ class TicketCreate(BaseModel):
     severity: SeverityIn = SeverityIn.MEDIUM
     description: str = Field(min_length=20, max_length=4000)
     preferred_contact_time: Optional[str] = Field(default=None, max_length=60)
+
+    @field_validator("business_type")
+    @classmethod
+    def _clean_business_type(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 2:
+            raise ValueError("Tell us your business category")
+        return v
 
     @field_validator("phone")
     @classmethod
