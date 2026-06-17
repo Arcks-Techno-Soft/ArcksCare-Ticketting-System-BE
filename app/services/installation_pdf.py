@@ -32,6 +32,7 @@ from .pdf_generator import (
     ROW_RULE,
     _card,
     _card_header,
+    _customer_photo_card,
     _fetch_signature,
     _fmt_dt,
     _grid_card,
@@ -63,6 +64,15 @@ def generate_installation_pdf(
         if engineer_bytes is None:
             engineer_bytes = _fetch_signature(
                 storage.public_url(resolution.engineer_signature_storage_key)
+            )
+
+    # Optional customer photo captured at sign-off.
+    photo_bytes = None
+    if resolution.customer_photo_storage_key:
+        photo_bytes = _read_local_signature(resolution.customer_photo_storage_key)
+        if photo_bytes is None:
+            photo_bytes = _fetch_signature(
+                storage.public_url(resolution.customer_photo_storage_key)
             )
 
     buffer = io.BytesIO()
@@ -189,6 +199,12 @@ def generate_installation_pdf(
         ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
     ]))
     story.append(KeepTogether([sig_card]))
+
+    # ---- Customer photo (optional) ----
+    photo_card = _customer_photo_card(photo_bytes, resolution.customer_photo_captured_at, body)
+    if photo_card is not None:
+        story.append(Spacer(1, 6 * mm))
+        story.append(KeepTogether([photo_card]))
 
     story.append(Spacer(1, 8 * mm))
     story.append(Paragraph(

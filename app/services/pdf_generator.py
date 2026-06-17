@@ -127,6 +127,13 @@ def generate_resolution_pdf(ticket: Ticket, resolution: Resolution) -> bytes:
         if engineer_bytes is None:
             engineer_bytes = _fetch_signature(storage.public_url(resolution.engineer_signature_storage_key))
 
+    # Optional customer photo captured at sign-off (same local-then-remote path).
+    photo_bytes = None
+    if resolution.customer_photo_storage_key:
+        photo_bytes = _read_local_signature(resolution.customer_photo_storage_key)
+        if photo_bytes is None:
+            photo_bytes = _fetch_signature(storage.public_url(resolution.customer_photo_storage_key))
+
     # Build the PDF in memory
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -277,6 +284,12 @@ def generate_resolution_pdf(ticket: Ticket, resolution: Resolution) -> bytes:
         ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
     ]))
     story.append(KeepTogether([sig_card]))
+
+    # ---- Customer photo (optional) ----
+    photo_card = _customer_photo_card(photo_bytes, resolution.customer_photo_captured_at, body)
+    if photo_card is not None:
+        story.append(Spacer(1, 6 * mm))
+        story.append(KeepTogether([photo_card]))
 
     # ---- Footer ----
     story.append(Spacer(1, 8 * mm))
@@ -674,3 +687,37 @@ def _signature_cell(role: str, name: str, signed_at, png_bytes, body_style):
         ("TOPPADDING", (0, 1), (0, 1), 6),
     ]))
     return inner
+
+
+def _customer_photo_card(photo_bytes, captured_at, body_style):
+    """Build the optional 'CUSTOMER PHOTO' card. Returns None when there's no
+    photo or it can't be decoded (the photo is optional — never block the PDF)."""
+    if not photo_bytes:
+        return None
+    try:
+        img = Image(io.BytesIO(photo_bytes))
+        max_w = 70 * mm
+        ratio = img.imageWidth / img.imageHeight if img.imageHeight else 1
+        img.drawWidth = max_w
+        img.drawHeight = max_w / ratio if ratio else 50 * mm
+        body_cell = img
+    except Exception:
+        logger.exception("Failed to embed customer photo")
+        return None
+
+    caption = Paragraph(
+        f"<font color='#737373' size='8'>Captured {_fmt_dt(captured_at)}</font>",
+        body_style,
+    )
+    inner = Table([[body_cell], [caption]], colWidths=[CARD_WIDTH_FULL])
+    inner.setStyle(TableStyle([
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("BOX", (0, 0), (-1, -1), 0.5, CARD_BORDER),
+    ]))
+    return Table(
+        [[_card_header("CUSTOMER PHOTO", width=CARD_WIDTH_FULL)], [inner]],
+        colWidths=[CARD_WIDTH_FULL],
+    )

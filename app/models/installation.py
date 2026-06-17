@@ -210,6 +210,11 @@ class InstallationResolution(Base):
     customer_signature_storage_key: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     customer_signed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Optional photo of the customer captured alongside their signature.
+    # Optional — never blocks closing. Embedded in the PDF.
+    customer_photo_storage_key: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    customer_photo_captured_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
     engineer_signature_storage_key: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     engineer_signed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

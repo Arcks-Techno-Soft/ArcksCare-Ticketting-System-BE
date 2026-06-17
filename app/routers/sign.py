@@ -166,14 +166,17 @@ async def submit_field_signatures(
     customer_signer_name: str = Form(..., min_length=2, max_length=120),
     customer_signature: UploadFile = File(..., description="PNG of the customer's signature"),
     engineer_signature: UploadFile = File(..., description="PNG of the sub-engineer's signature"),
+    photo: UploadFile | None = File(None, description="Optional photo of the customer"),
     db: Session = Depends(get_db),
 ):
     """Record both signatures collected by the sub-engineer off-site. On
     success the resolution PDF is generated and the ticket transitions
-    RESOLVED → CLOSED. The link is single-use — re-submitting returns 409."""
+    RESOLVED → CLOSED. The link is single-use — re-submitting returns 409.
+    An optional customer photo may accompany the signatures."""
     ticket, resolution = get_resolution_by_token(db, token)
     customer_bytes = await customer_signature.read()
     engineer_bytes = await engineer_signature.read()
+    photo_bytes = await photo.read() if photo is not None else None
     record_field_signatures(
         db, ticket, resolution,
         sub_engineer_id=sub_engineer_id,
@@ -182,6 +185,8 @@ async def submit_field_signatures(
         engineer_image_bytes=engineer_bytes,
         customer_content_type=customer_signature.content_type or "image/png",
         engineer_content_type=engineer_signature.content_type or "image/png",
+        photo_bytes=photo_bytes,
+        photo_content_type=photo.content_type if photo is not None else None,
     )
     db.refresh(resolution)
     return _field_doc(ticket, resolution)

@@ -111,6 +111,8 @@ def record_engineer_signature(
     actor: User,
     image_bytes: bytes,
     content_type: str = "image/png",
+    photo_bytes: bytes | None = None,
+    photo_content_type: str | None = None,
 ) -> InstallationResolution:
     if installation.assigned_engineer_id != actor.id:
         raise HTTPException(
@@ -129,6 +131,8 @@ def record_engineer_signature(
             detail="Engineer signature already recorded",
         )
     _validate_signature(image_bytes)
+    if photo_bytes:
+        _validate_photo(photo_bytes, photo_content_type)
 
     storage = get_storage()
     meta = storage.save_bytes(
@@ -139,6 +143,17 @@ def record_engineer_signature(
     )
     resolution.engineer_signature_storage_key = meta["storage_url"]
     resolution.engineer_signed_at = datetime.now(timezone.utc)
+
+    # Persist the optional customer photo BEFORE building the PDF so it's
+    # embedded in the document.
+    if photo_bytes:
+        _store_customer_photo(
+            storage, installation.reference, resolution, photo_bytes, photo_content_type,
+            datetime.now(timezone.utc),
+        )
+        _log_event(
+            db, installation=installation, actor=actor, event_type="CUSTOMER_PHOTO_CAPTURED",
+        )
     db.flush()
 
     pdf_bytes = generate_installation_pdf(installation, resolution)
@@ -182,3 +197,50 @@ def _validate_signature(image_bytes: bytes) -> None:
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail="Signature image too large",
         )
+
+
+# Customer photo captured at sign-off — a real camera image, so allow more
+# headroom than the 2 MB signature PNG.
+PHOTO_MAX_BYTES = 12 * 1024 * 1024
+
+
+def _validate_photo(photo_bytes: bytes, content_type: str | None) -> None:
+    if not photo_bytes or len(photo_bytes) < 200:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Customer photo looks empty",
+        )
+    if len(photo_bytes) > PHOTO_MAX_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Customer photo too large (max 12 MB)",
+        )
+    ct = (content_type or "").lower()
+    if ct and not ct.startswith("image/"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Customer photo must be an image",
+        )
+
+
+def _store_customer_photo(
+    storage,
+    reference: str,
+    resolution: InstallationResolution,
+    photo_bytes: bytes,
+    photo_content_type: str | None,
+    captured_at: datetime,
+) -> None:
+    """Persist (or replace) the customer photo bytes — no validation/log/commit."""
+    ct = (photo_content_type or "image/jpeg").lower()
+    ext = "png" if "png" in ct else "jpg"
+    meta = storage.save_bytes(
+        photo_bytes,
+        photo_content_type or "image/jpeg",
+        reference,
+        f"photo-customer-{reference}.{ext}",
+    )
+    resolution.customer_photo_storage_key = meta["storage_url"]
+    resolution.customer_photo_captured_at = captured_at
+
+
