@@ -102,7 +102,7 @@ def create_ticket(
         contact_name=payload.contact_name.strip(),
         phone=payload.phone,
         email=(payload.email or "").strip().lower() or None,
-        business_type=payload.business_type.value,
+        business_type=payload.business_type,
         address_line1=payload.address_line1.strip(),
         address_line2=(payload.address_line2 or "").strip() or None,
         address_line3=(payload.address_line3 or "").strip() or None,
