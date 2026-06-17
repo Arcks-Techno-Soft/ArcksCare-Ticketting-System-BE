@@ -30,7 +30,9 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     window_start = now - timedelta(days=days)
 
-    all_tickets: List[Ticket] = db.query(Ticket).all()
+    all_tickets: List[Ticket] = (
+        db.query(Ticket).filter(Ticket.deleted_at.is_(None)).all()
+    )
     window_tickets = [t for t in all_tickets if _aware(t.created_at) >= window_start]
 
     # ---- KPI cards ----

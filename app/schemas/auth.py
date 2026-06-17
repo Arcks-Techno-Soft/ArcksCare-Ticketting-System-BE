@@ -81,6 +81,16 @@ class AssignEngineerRequest(BaseModel):
     engineer_id: int
 
 
+class ForceCloseRequest(BaseModel):
+    # Admin/Owner override-close. Reason is mandatory for the audit trail.
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class DeleteTicketRequest(BaseModel):
+    # Soft-delete reason is optional but recorded when provided.
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
 class UpdateWarrantyRequest(BaseModel):
     warranty_status: str  # UNKNOWN / UNDER_WARRANTY / OUT_OF_WARRANTY / AMC
 

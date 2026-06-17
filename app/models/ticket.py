@@ -108,6 +108,12 @@ class Ticket(Base):
     assigned_engineer_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     assigned_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Soft delete — Admin/Owner only. NULL = live; when set, the ticket is
+    # hidden from every list/detail/analytics query but the row is retained for
+    # audit and recovery.
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    deleted_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -174,6 +180,9 @@ class Ticket(Base):
     )
     assigned_engineer: Mapped[Optional["User"]] = relationship(
         foreign_keys=[assigned_engineer_id], lazy="joined"
+    )
+    deleted_by: Mapped[Optional["User"]] = relationship(
+        foreign_keys=[deleted_by_id], lazy="joined"
     )
 
 
