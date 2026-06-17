@@ -540,18 +540,24 @@ async def sign_as_customer_via_engineer(
 async def sign_as_engineer(
     reference: str,
     signature: UploadFile = File(..., description="PNG of the engineer's signature"),
+    photo: UploadFile | None = File(None, description="Optional photo of the customer"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """Engineer signs the resolution document. Customer must have signed first.
 
-    On success: PDF is generated, ticket transitions RESOLVED → CLOSED.
+    An optional customer photo, captured at this final sign-off step, is saved
+    and embedded in the PDF. On success: PDF is generated, ticket transitions
+    RESOLVED → CLOSED.
     """
     ticket = _load_ticket(db, reference, user)
     image_bytes = await signature.read()
+    photo_bytes = await photo.read() if photo is not None else None
     record_engineer_signature(
         db, ticket, user, image_bytes,
         content_type=signature.content_type or "image/png",
+        photo_bytes=photo_bytes,
+        photo_content_type=photo.content_type if photo is not None else None,
     )
     db.refresh(ticket)
     return ticket

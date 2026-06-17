@@ -370,14 +370,20 @@ async def sign_customer(
 async def sign_engineer(
     reference: str,
     signature: UploadFile = File(...),
+    photo: UploadFile | None = File(None, description="Optional photo of the customer"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """Engineer signs and closes the installation. An optional customer photo,
+    captured at this final sign-off step, is saved and embedded in the PDF."""
     inst = _load(db, reference)
     image_bytes = await signature.read()
+    photo_bytes = await photo.read() if photo is not None else None
     record_engineer_signature(
         db, inst, user, image_bytes,
         content_type=signature.content_type or "image/png",
+        photo_bytes=photo_bytes,
+        photo_content_type=photo.content_type if photo is not None else None,
     )
     db.refresh(inst)
     return inst

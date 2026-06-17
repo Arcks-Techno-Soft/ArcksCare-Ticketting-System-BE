@@ -87,6 +87,33 @@ def ensure_installation_address_columns(engine: Engine) -> None:
             conn.execute(text(f"ALTER TABLE {qualify('installations')} ADD COLUMN {name} {ddl}"))
 
 
+def ensure_installation_resolution_photo_columns(engine: Engine) -> None:
+    """Add installation_resolutions.customer_photo_* columns if missing.
+
+    Idempotent. `create_all` doesn't add columns to existing tables, so we
+    ALTER directly. Works on SQLite + Postgres.
+    """
+    insp = inspect(engine)
+    if "installation_resolutions" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # Fresh DB — create_all will include the columns.
+    existing = {
+        c["name"] for c in insp.get_columns("installation_resolutions", schema=MIGRATION_SCHEMA)
+    }
+    ts_type = "TIMESTAMP" if engine.dialect.name == "sqlite" else "TIMESTAMPTZ"
+    cols = {
+        "customer_photo_storage_key": "VARCHAR(500)",
+        "customer_photo_captured_at": ts_type,
+    }
+    missing = {k: v for k, v in cols.items() if k not in existing}
+    if not missing:
+        return
+    with engine.begin() as conn:
+        for name, ddl in missing.items():
+            conn.execute(
+                text(f"ALTER TABLE {qualify('installation_resolutions')} ADD COLUMN {name} {ddl}")
+            )
+
+
 def _log_event(
     db: Session,
     *,

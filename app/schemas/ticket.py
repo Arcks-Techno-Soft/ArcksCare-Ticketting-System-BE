@@ -238,6 +238,13 @@ class ResolutionOut(BaseModel):
     id: int
     customer_signer_name: Optional[str] = None
     customer_signed_at: Optional[datetime] = None
+    # Set when an optional customer photo was captured at sign-off.
+    customer_photo_captured_at: Optional[datetime] = None
+    # Viewable URL for the customer photo, resolved from the stored key (the raw
+    # key itself stays unexposed, like the signature keys). Mirrors AttachmentOut.
+    customer_photo_url: Optional[str] = Field(
+        default=None, validation_alias="customer_photo_storage_key"
+    )
     engineer_signed_at: Optional[datetime] = None
     # Sub-engineer's name when the resolution was signed via the remote link.
     engineer_signer_name: Optional[str] = None
@@ -246,6 +253,20 @@ class ResolutionOut(BaseModel):
     field_sign_link_generated_at: Optional[datetime] = None
     # Signing token. The frontend builds the field-sign URL from this.
     customer_sign_token: str
+
+    @field_validator("customer_photo_url", mode="after")
+    @classmethod
+    def _resolve_photo_url(cls, v: Optional[str]) -> Optional[str]:
+        """Turn the stored key into a viewable URL (no-op locally, signed URL on
+        Supabase). Falls back to the raw value rather than crashing."""
+        if not v:
+            return v
+        from ..services.storage import get_storage  # noqa: WPS433
+
+        try:
+            return get_storage().public_url(v)
+        except Exception:
+            return v
 
 # Update forward refs after the referenced classes are defined.
 TicketResponse.model_rebuild()

@@ -205,8 +205,12 @@ def record_engineer_signature(
     actor: User,
     image_bytes: bytes,
     content_type: str = "image/png",
+    photo_bytes: Optional[bytes] = None,
+    photo_content_type: Optional[str] = None,
 ) -> Resolution:
-    """Engineer signs after the customer has signed; closes the ticket and generates the PDF."""
+    """Engineer signs after the customer has signed; closes the ticket and
+    generates the PDF. An optional customer photo, captured at this final
+    sign-off step, is persisted before the PDF is built so it's embedded."""
     _reject_if_remote(ticket)
     if ticket.assigned_engineer_id != actor.id:
         raise HTTPException(
@@ -228,6 +232,8 @@ def record_engineer_signature(
     # The engineer signature closes the ticket — block it while parts ship.
     _assert_parts_delivered(db, ticket)
     _validate_signature(image_bytes)
+    if photo_bytes:
+        _validate_photo(photo_bytes, photo_content_type)
 
     storage = get_storage()
     meta = storage.save_bytes(
@@ -238,6 +244,15 @@ def record_engineer_signature(
     )
     resolution.engineer_signature_storage_key = meta["storage_url"]
     resolution.engineer_signed_at = datetime.now(timezone.utc)
+
+    # Persist the optional customer photo BEFORE building the PDF so it's
+    # embedded in the document.
+    if photo_bytes:
+        _store_customer_photo(
+            storage, ticket.reference, resolution, photo_bytes, photo_content_type,
+            datetime.now(timezone.utc),
+        )
+        _log_event(db, ticket=ticket, actor=actor, event_type="CUSTOMER_PHOTO_CAPTURED")
     db.flush()
 
     # Build the PDF now that both signatures are in place.
@@ -326,6 +341,8 @@ def record_field_signatures(
     engineer_image_bytes: bytes,
     customer_content_type: str = "image/png",
     engineer_content_type: str = "image/png",
+    photo_bytes: Optional[bytes] = None,
+    photo_content_type: Optional[str] = None,
 ) -> Resolution:
     """Record the customer + sub-engineer signatures collected via the remote
     link, generate the resolution PDF, and close the ticket. No auth — the
@@ -372,6 +389,10 @@ def record_field_signatures(
     resolution.engineer_signature_storage_key = eng_meta["storage_url"]
     resolution.engineer_signed_at = now
     resolution.engineer_signer_name = sub.name.strip()[:120]
+    _save_customer_photo(
+        storage, ticket.reference, resolution, photo_bytes, photo_content_type,
+        db=db, ticket=ticket, captured_at=now,
+    )
     resolution.signed_by_sub_engineer_id = sub.id
     db.flush()
 
@@ -433,12 +454,17 @@ def ensure_resolution_field_signing_columns(engine) -> None:
         stmts.append(f"ALTER TABLE {tbl} ADD COLUMN field_sign_link_generated_at {ts_type}")
     if "signed_by_sub_engineer_id" not in columns:
         stmts.append(f"ALTER TABLE {tbl} ADD COLUMN signed_by_sub_engineer_id INTEGER")
+    # Optional customer photo captured at sign-off.
+    if "customer_photo_storage_key" not in columns:
+        stmts.append(f"ALTER TABLE {tbl} ADD COLUMN customer_photo_storage_key VARCHAR(500)")
+    if "customer_photo_captured_at" not in columns:
+        stmts.append(f"ALTER TABLE {tbl} ADD COLUMN customer_photo_captured_at {ts_type}")
     if not stmts:
         return
     with engine.begin() as conn:
         for stmt in stmts:
             conn.execute(text(stmt))
-    logger.info("Added field-signing columns to resolutions (%d)", len(stmts))
+    logger.info("Added field-signing/photo columns to resolutions (%d)", len(stmts))
 
 
 def _validate_signature(image_bytes: bytes) -> None:
@@ -452,3 +478,72 @@ def _validate_signature(image_bytes: bytes) -> None:
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail="Signature image too large",
         )
+
+
+# Customer photo captured at sign-off — a real camera image, so allow more
+# headroom than the 2 MB signature PNG.
+PHOTO_MAX_BYTES = 12 * 1024 * 1024
+
+
+def _validate_photo(photo_bytes: bytes, content_type: Optional[str]) -> None:
+    if not photo_bytes or len(photo_bytes) < 200:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Customer photo looks empty",
+        )
+    if len(photo_bytes) > PHOTO_MAX_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Customer photo too large (max 12 MB)",
+        )
+    ct = (content_type or "").lower()
+    if ct and not ct.startswith("image/"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Customer photo must be an image",
+        )
+
+
+def _store_customer_photo(
+    storage,
+    reference: str,
+    resolution: Resolution,
+    photo_bytes: bytes,
+    photo_content_type: Optional[str],
+    captured_at: datetime,
+) -> None:
+    """Persist (or replace) the customer photo bytes on the resolution. Pure
+    storage + column write — no validation, logging, or commit."""
+    ct = (photo_content_type or "image/jpeg").lower()
+    ext = "png" if "png" in ct else "jpg"
+    meta = storage.save_bytes(
+        photo_bytes,
+        photo_content_type or "image/jpeg",
+        reference,
+        f"photo-customer-{reference}.{ext}",
+    )
+    resolution.customer_photo_storage_key = meta["storage_url"]
+    resolution.customer_photo_captured_at = captured_at
+
+
+def _save_customer_photo(
+    storage,
+    reference: str,
+    resolution: Resolution,
+    photo_bytes: Optional[bytes],
+    photo_content_type: Optional[str],
+    *,
+    db: Session,
+    ticket: Ticket,
+    captured_at: Optional[datetime] = None,
+) -> None:
+    """Persist an optional customer photo bundled with a signature submission.
+    No-op when no photo was supplied — the photo never blocks sign-off."""
+    if not photo_bytes:
+        return
+    _validate_photo(photo_bytes, photo_content_type)
+    _store_customer_photo(
+        storage, reference, resolution, photo_bytes, photo_content_type,
+        captured_at or datetime.now(timezone.utc),
+    )
+    _log_event(db, ticket=ticket, actor=None, event_type="CUSTOMER_PHOTO_CAPTURED")
