@@ -137,6 +137,13 @@ class Ticket(Base):
         cascade="all, delete-orphan",
         order_by="SubEngineer.created_at",
     )
+    # Extra system users (engineers/managers/admins) attending the same visit.
+    # View + notified only; the primary `assigned_engineer` drives the workflow.
+    additional_engineers: Mapped[List["TicketEngineer"]] = relationship(
+        back_populates="ticket",
+        cascade="all, delete-orphan",
+        order_by="TicketEngineer.added_at",
+    )
     spares: Mapped[List["TicketSpare"]] = relationship(
         back_populates="ticket",
         cascade="all, delete-orphan",
