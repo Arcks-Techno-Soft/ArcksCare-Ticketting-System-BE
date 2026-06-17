@@ -19,11 +19,13 @@ from ..models.shipment import TicketShipment, TicketShipmentItem
 from ..models.spare import SpareCatalog, TicketSpare
 from ..models.sub_engineer import SubEngineer, SubEngineerRoster
 from ..models.ticket import ServiceType, Ticket, TicketEvent, WorkNote
+from ..models.ticket_engineer import TicketEngineer
 from ..models.user import User, UserRole
 from ..schemas.auth import (
     AddSubEngineerRequest,
     AddTicketSpareRequest,
     AddWorkNoteRequest,
+    AdditionalEngineerOut,
     AssignEngineerRequest,
     ChargesSummary,
     CreateRosterSubEngineerRequest,
@@ -70,8 +72,10 @@ from ..services.storage import get_storage
 from ..services.ticket_workflow import (
     accept,
     acknowledge,
+    add_engineer,
     add_work_note,
     assign_engineer,
+    remove_engineer,
     resolve,
     set_service_type,
     start_work,
@@ -230,9 +234,15 @@ def list_tickets(
     user: User = Depends(get_current_user),
 ):
     q = db.query(Ticket)
-    # Engineers only see tickets assigned to them.
+    # Engineers only see tickets assigned to them — as primary OR as an
+    # additional engineer brought in for the same visit.
     if user.role == UserRole.ENGINEER.value:
-        q = q.filter(Ticket.assigned_engineer_id == user.id)
+        additional = db.query(TicketEngineer.ticket_id).filter(
+            TicketEngineer.engineer_id == user.id
+        )
+        q = q.filter(
+            or_(Ticket.assigned_engineer_id == user.id, Ticket.id.in_(additional))
+        )
     if status:
         q = q.filter(Ticket.status == status.upper())
     if severity:
@@ -285,9 +295,15 @@ def ticket_status_counts(
     the list the user is looking at.
     """
     q = db.query(Ticket.status, func.count(Ticket.id))
-    # Engineers only see tickets assigned to them.
+    # Engineers only see tickets assigned to them — as primary OR as an
+    # additional engineer brought in for the same visit.
     if user.role == UserRole.ENGINEER.value:
-        q = q.filter(Ticket.assigned_engineer_id == user.id)
+        additional = db.query(TicketEngineer.ticket_id).filter(
+            TicketEngineer.engineer_id == user.id
+        )
+        q = q.filter(
+            or_(Ticket.assigned_engineer_id == user.id, Ticket.id.in_(additional))
+        )
     if severity:
         q = q.filter(Ticket.severity == severity.upper())
     if product:
@@ -382,6 +398,43 @@ def self_assign_ticket(
     ticket = _load_ticket(db, reference, user)
     ticket, _ = assign_engineer(db, ticket, user, user.id)
     return ticket
+
+
+@router.post("/tickets/{reference}/engineers", response_model=TicketResponse)
+def add_ticket_engineer(
+    reference: str,
+    body: AssignEngineerRequest,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Add an EXTRA engineer to attend the same visit. Admin/Manager/Owner only.
+
+    The added engineer can view the ticket and is notified, but only the primary
+    assignee drives the workflow. Reuses the assignment notification channels.
+    """
+    ticket = _load_ticket(db, reference, user)
+    _, engineer = add_engineer(db, ticket, user, body.engineer_id)
+    # Notify the added engineer just like a primary assignment.
+    background.add_task(send_engineer_assignment, ticket, engineer, user)
+    background.add_task(
+        send_engineer_assignment_alert, ticket.id, engineer.id, user.id
+    )
+    background.add_task(notify_ticket_assigned, ticket.id, engineer.id)
+    db.refresh(ticket)
+    return ticket
+
+
+@router.delete("/tickets/{reference}/engineers/{engineer_id}", response_model=TicketResponse)
+def remove_ticket_engineer(
+    reference: str,
+    engineer_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Remove an additional engineer from the ticket. Admin/Manager/Owner only."""
+    ticket = _load_ticket(db, reference, user)
+    return remove_engineer(db, ticket, user, engineer_id)
 
 
 @router.patch("/tickets/{reference}/warranty", response_model=TicketResponse)
@@ -1363,6 +1416,8 @@ def _load_ticket(
         and user.role == UserRole.ENGINEER.value
         and t.assigned_engineer_id != user.id
         and t.raised_by_id != user.id
+        # …or they were added as an additional engineer for the same visit.
+        and not any(ae.engineer_id == user.id for ae in t.additional_engineers)
     ):
         raise HTTPException(status_code=404, detail="Ticket not found")
     return t

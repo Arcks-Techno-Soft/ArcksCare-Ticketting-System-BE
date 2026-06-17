@@ -70,6 +70,7 @@ def _bootstrap_db() -> None:
     from .models import spare as _s  # noqa: F401
     from .models import installation as _i  # noqa: F401
     from .models import sub_engineer as _se  # noqa: F401
+    from .models import ticket_engineer as _te  # noqa: F401
     from .services.auth import ensure_user_profile_columns, seed_initial_users
     from .services.sample_data import (
         seed_demo_tickets,

@@ -145,6 +145,106 @@ def assign_engineer(db: Session, ticket: Ticket, actor: User, engineer_id: int) 
     return ticket, engineer
 
 
+def add_engineer(
+    db: Session, ticket: Ticket, actor: User, engineer_id: int
+) -> tuple["TicketEngineer", User]:
+    """Add an EXTRA engineer to the ticket for the same site visit. Manager/Admin only.
+
+    The added engineer can view the ticket and is notified, but only the primary
+    `assigned_engineer` drives the workflow (accept / notes / resolve). Returns
+    (link, engineer) so the caller can fire notifications.
+    """
+    from ..models.ticket_engineer import TicketEngineer  # local import: load order
+
+    if actor.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
+        raise HTTPException(status_code=403, detail="Only Manager or Admin can add an engineer")
+
+    # A primary engineer must already be assigned — additional engineers are
+    # helpers on top of a real assignment, not a way to assign the first one.
+    if ticket.assigned_engineer_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Assign a primary engineer before adding additional engineers.",
+        )
+
+    engineer = db.query(User).filter(User.id == engineer_id).one_or_none()
+    if engineer is None or not engineer.active:
+        raise HTTPException(status_code=400, detail="Invalid engineer")
+
+    # Can't add the primary assignee as an additional engineer — they're already on it.
+    if engineer.id == ticket.assigned_engineer_id:
+        raise HTTPException(
+            status_code=409,
+            detail="That engineer is already the primary assignee on this ticket.",
+        )
+
+    existing = (
+        db.query(TicketEngineer)
+        .filter(
+            TicketEngineer.ticket_id == ticket.id,
+            TicketEngineer.engineer_id == engineer.id,
+        )
+        .one_or_none()
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="That engineer is already added to this ticket.",
+        )
+
+    link = TicketEngineer(
+        ticket_id=ticket.id, engineer_id=engineer.id, added_by_id=actor.id
+    )
+    db.add(link)
+    _log_event(
+        db, ticket=ticket, actor=actor, event_type="ENGINEER_ADDED",
+        payload={"engineer_id": engineer.id, "engineer_name": engineer.name},
+    )
+    db.commit()
+    db.refresh(link)
+    logger.info(
+        "Additional engineer %s added to %s by %s",
+        engineer.username, ticket.reference, actor.username,
+    )
+    return link, engineer
+
+
+def remove_engineer(db: Session, ticket: Ticket, actor: User, engineer_id: int) -> Ticket:
+    """Remove an additional engineer from the ticket. Manager/Admin only.
+
+    Never touches the primary `assigned_engineer` — use /assign to change that.
+    """
+    from ..models.ticket_engineer import TicketEngineer  # local import: load order
+
+    if actor.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
+        raise HTTPException(status_code=403, detail="Only Manager or Admin can remove an engineer")
+
+    link = (
+        db.query(TicketEngineer)
+        .filter(
+            TicketEngineer.ticket_id == ticket.id,
+            TicketEngineer.engineer_id == engineer_id,
+        )
+        .one_or_none()
+    )
+    if link is None:
+        raise HTTPException(status_code=404, detail="Engineer is not on this ticket")
+
+    engineer_name = link.engineer.name if link.engineer else None
+    db.delete(link)
+    _log_event(
+        db, ticket=ticket, actor=actor, event_type="ENGINEER_REMOVED",
+        payload={"engineer_id": engineer_id, "engineer_name": engineer_name},
+    )
+    db.commit()
+    db.refresh(ticket)
+    logger.info(
+        "Additional engineer %s removed from %s by %s",
+        engineer_id, ticket.reference, actor.username,
+    )
+    return ticket
+
+
 # --------------------------- assignee transitions ----------------------- #
 
 def _require_assignee(ticket: Ticket, actor: User) -> None:

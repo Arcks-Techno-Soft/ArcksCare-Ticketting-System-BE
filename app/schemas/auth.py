@@ -148,6 +148,16 @@ class SubEngineerOut(BaseModel):
     created_by: Optional[UserOut] = None
 
 
+class AdditionalEngineerOut(BaseModel):
+    """An extra system user attending the same visit (view + notified only)."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    engineer: UserOut
+    added_by: Optional[UserOut] = None
+    added_at: datetime
+
+
 class UpdateSubEngineerFeeRequest(BaseModel):
     fee_inr: int = Field(ge=0, le=10_000_000)
 
