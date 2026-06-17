@@ -245,6 +245,103 @@ def remove_engineer(db: Session, ticket: Ticket, actor: User, engineer_id: int) 
     return ticket
 
 
+# --------------------------- admin overrides ---------------------------- #
+
+def _require_admin_or_owner(actor: User, action: str) -> None:
+    if actor.role not in (UserRole.ADMIN.value, UserRole.OWNER.value):
+        raise HTTPException(status_code=403, detail=f"Only Owner or Admin can {action}")
+
+
+def compute_close_pending(ticket: Ticket) -> list[str]:
+    """Human-readable list of everything still incomplete on a ticket.
+
+    Shown in the force-close confirmation so the Admin sees exactly what they're
+    overriding before closing a ticket that didn't go through the normal flow.
+    Returns [] for an already-closed ticket.
+    """
+    if ticket.status == TicketStatus.CLOSED.value:
+        return []
+
+    pending: list[str] = []
+    if ticket.acknowledged_at is None:
+        pending.append("Ticket not acknowledged")
+    if ticket.warranty_status == WarrantyStatus.UNKNOWN.value:
+        pending.append("Warranty status not set")
+    if ticket.assigned_engineer_id is None:
+        pending.append("No engineer assigned")
+    elif ticket.accepted_at is None:
+        pending.append("Engineer hasn't accepted the assignment")
+    if ticket.resolving_started_at is None:
+        pending.append("Work not started")
+    if ticket.resolved_at is None:
+        pending.append("Not marked resolved")
+
+    # Site visits normally close only after signatures + PDF.
+    if ticket.service_type == ServiceType.SITE_VISIT.value:
+        res = ticket.resolution
+        if res is None:
+            pending.append("Resolution not completed (no signatures / PDF)")
+        else:
+            if res.customer_signed_at is None:
+                pending.append("Customer signature not collected")
+            if res.engineer_signed_at is None:
+                pending.append("Engineer signature not collected")
+            if res.pdf_generated_at is None:
+                pending.append("Resolution PDF not generated")
+
+    for se in ticket.sub_engineers:
+        if se.fee_inr is None:
+            pending.append(f"Fee not recorded for sub-engineer {se.name}")
+    if any(sh.delivered_at is None for sh in ticket.shipments):
+        pending.append("A parts shipment is not yet marked delivered")
+    return pending
+
+
+def force_close(db: Session, ticket: Ticket, actor: User, reason: str) -> Ticket:
+    """Admin/Owner override: move a ticket to CLOSED from ANY status, skipping
+    signatures/PDF. A reason is required and recorded for audit."""
+    _require_admin_or_owner(actor, "close a ticket")
+    reason = (reason or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="A reason is required to close the ticket.")
+    if ticket.status == TicketStatus.CLOSED.value:
+        raise HTTPException(status_code=409, detail="Ticket is already closed.")
+
+    prev = ticket.status
+    ticket.status = TicketStatus.CLOSED.value
+    _log_event(
+        db, ticket=ticket, actor=actor, event_type="FORCE_CLOSED",
+        from_status=prev, to_status=ticket.status,
+        payload={"reason": reason, "pending": compute_close_pending(ticket)},
+        note=reason,
+    )
+    db.commit()
+    db.refresh(ticket)
+    logger.info("Ticket %s force-closed from %s by %s: %s",
+                ticket.reference, prev, actor.username, reason)
+    return ticket
+
+
+def soft_delete_ticket(db: Session, ticket: Ticket, actor: User, reason: str) -> Ticket:
+    """Admin/Owner override: soft-delete a ticket in ANY status. The row is
+    retained (with deleted_at / deleted_by) but hidden everywhere."""
+    _require_admin_or_owner(actor, "delete a ticket")
+    if ticket.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="Ticket is already deleted.")
+
+    ticket.deleted_at = datetime.now(timezone.utc)
+    ticket.deleted_by_id = actor.id
+    _log_event(
+        db, ticket=ticket, actor=actor, event_type="DELETED",
+        payload={"reason": (reason or "").strip() or None},
+        note=(reason or "").strip() or None,
+    )
+    db.commit()
+    db.refresh(ticket)
+    logger.info("Ticket %s soft-deleted by %s", ticket.reference, actor.username)
+    return ticket
+
+
 # --------------------------- assignee transitions ----------------------- #
 
 def _require_assignee(ticket: Ticket, actor: User) -> None:

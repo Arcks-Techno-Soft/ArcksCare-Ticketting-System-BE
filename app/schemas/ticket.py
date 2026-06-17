@@ -216,6 +216,26 @@ class TicketResponse(BaseModel):
     attachments: List[AttachmentOut] = []
 
 
+class ClosePreviewOut(BaseModel):
+    """Summary + 'what's still pending' for the force-close confirmation modal."""
+    model_config = ConfigDict(from_attributes=True)
+
+    reference: str
+    business_name: str
+    status: str
+    warranty_status: str
+    service_type: str
+    assigned_engineer: Optional[UserOut] = None
+    additional_engineers: List[AdditionalEngineerOut] = []
+    acknowledged_at: Optional[datetime] = None
+    assigned_at: Optional[datetime] = None
+    accepted_at: Optional[datetime] = None
+    resolving_started_at: Optional[datetime] = None
+    resolved_at: Optional[datetime] = None
+    # Computed (set by the endpoint) — everything still incomplete.
+    pending: List[str] = []
+
+
 class TicketListPage(BaseModel):
     """Paginated envelope around TicketListItem rows."""
     items: List["TicketListItem"]

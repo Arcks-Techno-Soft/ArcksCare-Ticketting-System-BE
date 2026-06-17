@@ -31,6 +31,8 @@ from ..schemas.auth import (
     CreateRosterSubEngineerRequest,
     CreateUserRequest,
     CreateUserResponse,
+    DeleteTicketRequest,
+    ForceCloseRequest,
     RegisterPushTokenRequest,
     ResolveRequest,
     SpareCatalogItem,
@@ -51,6 +53,7 @@ from ..schemas.auth import (
     WorkNoteOut,
 )
 from ..schemas.ticket import (
+    ClosePreviewOut,
     ShipmentCreate,
     ShipmentOut,
     TicketListItem,
@@ -75,9 +78,12 @@ from ..services.ticket_workflow import (
     add_engineer,
     add_work_note,
     assign_engineer,
+    compute_close_pending,
+    force_close,
     remove_engineer,
     resolve,
     set_service_type,
+    soft_delete_ticket,
     start_work,
     update_severity,
     update_warranty,
@@ -233,7 +239,7 @@ def list_tickets(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    q = db.query(Ticket)
+    q = db.query(Ticket).filter(Ticket.deleted_at.is_(None))
     # Engineers only see tickets assigned to them — as primary OR as an
     # additional engineer brought in for the same visit.
     if user.role == UserRole.ENGINEER.value:
@@ -294,7 +300,7 @@ def ticket_status_counts(
     filters (severity, product, search, date) are applied so the counts match
     the list the user is looking at.
     """
-    q = db.query(Ticket.status, func.count(Ticket.id))
+    q = db.query(Ticket.status, func.count(Ticket.id)).filter(Ticket.deleted_at.is_(None))
     # Engineers only see tickets assigned to them — as primary OR as an
     # additional engineer brought in for the same visit.
     if user.role == UserRole.ENGINEER.value:
@@ -435,6 +441,44 @@ def remove_ticket_engineer(
     """Remove an additional engineer from the ticket. Admin/Manager/Owner only."""
     ticket = _load_ticket(db, reference, user)
     return remove_engineer(db, ticket, user, engineer_id)
+
+
+@router.get("/tickets/{reference}/close-preview", response_model=ClosePreviewOut)
+def close_preview(
+    reference: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Summary + 'what's still pending' shown before an Admin/Owner force-closes."""
+    ticket = _load_ticket(db, reference, user)
+    out = ClosePreviewOut.model_validate(ticket)
+    out.pending = compute_close_pending(ticket)
+    return out
+
+
+@router.post("/tickets/{reference}/force-close", response_model=TicketResponse)
+def force_close_ticket(
+    reference: str,
+    body: ForceCloseRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Admin/Owner override: close a ticket from ANY status (reason required)."""
+    ticket = _load_ticket(db, reference, user)
+    return force_close(db, ticket, user, body.reason)
+
+
+@router.delete("/tickets/{reference}", response_model=TicketResponse)
+def delete_ticket(
+    reference: str,
+    body: Optional[DeleteTicketRequest] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Admin/Owner override: soft-delete a ticket in ANY status. The row is
+    retained (hidden everywhere) for audit/recovery."""
+    ticket = _load_ticket(db, reference, user)
+    return soft_delete_ticket(db, ticket, user, body.reason if body else None)
 
 
 @router.patch("/tickets/{reference}/warranty", response_model=TicketResponse)
@@ -1414,7 +1458,14 @@ def _load_ticket(
     pass the authenticated `Depends(get_current_user)` value so the scope
     check fires.
     """
-    t = db.query(Ticket).filter(Ticket.reference == reference.strip().upper()).one_or_none()
+    t = (
+        db.query(Ticket)
+        .filter(
+            Ticket.reference == reference.strip().upper(),
+            Ticket.deleted_at.is_(None),  # soft-deleted tickets are invisible
+        )
+        .one_or_none()
+    )
     if t is None:
         raise HTTPException(status_code=404, detail="Ticket not found")
     if (

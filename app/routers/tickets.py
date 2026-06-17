@@ -141,7 +141,12 @@ def get_ticket_by_reference(reference: str, db: Session = Depends(get_db)):
     reference is the auth factor for now.
     """
     ticket = (
-        db.query(Ticket).filter(Ticket.reference == reference.strip().upper()).one_or_none()
+        db.query(Ticket)
+        .filter(
+            Ticket.reference == reference.strip().upper(),
+            Ticket.deleted_at.is_(None),
+        )
+        .one_or_none()
     )
     if ticket is None:
         raise HTTPException(status_code=404, detail="Ticket not found")
@@ -155,5 +160,11 @@ def list_recent_tickets(limit: int = 20, db: Session = Depends(get_db)):
     NOTE: This endpoint is not safe to expose publicly in production. Lock
     it behind admin auth before deploying.
     """
-    tickets = db.query(Ticket).order_by(Ticket.created_at.desc()).limit(min(limit, 100)).all()
+    tickets = (
+        db.query(Ticket)
+        .filter(Ticket.deleted_at.is_(None))
+        .order_by(Ticket.created_at.desc())
+        .limit(min(limit, 100))
+        .all()
+    )
     return tickets

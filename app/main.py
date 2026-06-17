@@ -85,7 +85,10 @@ def _bootstrap_db() -> None:
         seed_spare_catalog,
     )
     from .services.sub_engineers import ensure_sub_engineer_fee_column
-    from .services.ticket_service import ensure_raised_by_column
+    from .services.ticket_service import (
+        ensure_raised_by_column,
+        ensure_ticket_soft_delete_columns,
+    )
     from .services.installation_workflow import (
         ensure_installation_address_columns,
         ensure_installation_invoice_document_columns,
@@ -104,6 +107,7 @@ def _bootstrap_db() -> None:
     ensure_resolution_field_signing_columns(engine)
     ensure_sub_engineer_fee_column(engine)
     ensure_raised_by_column(engine)
+    ensure_ticket_soft_delete_columns(engine)
     ensure_installation_invoice_document_columns(engine)
     ensure_installation_address_columns(engine)
     ensure_installation_resolution_photo_columns(engine)

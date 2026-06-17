@@ -36,6 +36,24 @@ def ensure_raised_by_column(engine: Engine) -> None:
     with engine.begin() as conn:
         conn.execute(text(f"ALTER TABLE {qualify('tickets')} ADD COLUMN raised_by_id INTEGER"))
 
+
+def ensure_ticket_soft_delete_columns(engine: Engine) -> None:
+    """Add tickets.deleted_at / deleted_by_id if missing.
+
+    Idempotent ALTER so existing prod/SQLite tables gain the soft-delete columns
+    without a full migration. Existing rows get NULL (i.e. not deleted). Scoped
+    to DB_SCHEMA so a test backend can never alter the public/production table.
+    """
+    insp = inspect(engine)
+    if "tickets" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # Fresh DB — create_all will include the columns.
+    existing = {c["name"] for c in insp.get_columns("tickets", schema=MIGRATION_SCHEMA)}
+    with engine.begin() as conn:
+        if "deleted_at" not in existing:
+            conn.execute(text(f"ALTER TABLE {qualify('tickets')} ADD COLUMN deleted_at TIMESTAMP"))
+        if "deleted_by_id" not in existing:
+            conn.execute(text(f"ALTER TABLE {qualify('tickets')} ADD COLUMN deleted_by_id INTEGER"))
+
 # Any not-yet-resolved status. New submissions for the same serial are blocked
 # while one of these exists within the dedup window.
 OPEN_STATUSES = (
@@ -63,6 +81,7 @@ def find_recent_open_ticket(db: Session, serial_number: str) -> Optional[Ticket]
         .where(Ticket.serial_number == serial_number.strip().upper())
         .where(Ticket.status.in_(OPEN_STATUSES))
         .where(Ticket.created_at >= window_start)
+        .where(Ticket.deleted_at.is_(None))  # a deleted ticket never blocks a new one
         .order_by(Ticket.created_at.desc())
         .limit(1)
     )
