@@ -44,6 +44,8 @@ class InstallationCreate(InstallationAddressUpdate):
     phone: str = Field(min_length=7, max_length=20)
     email: Optional[str] = Field(default=None, max_length=200)
     invoice_number: str = Field(min_length=1, max_length=80)
+    # Products to install — free text, one per line (name + quantity). Required.
+    products_for_installation: str = Field(min_length=2, max_length=4000)
     # Optional initial assignment. If supplied, the installation is created
     # already ASSIGNED to this user (engineer / self-assign).
     assigned_engineer_id: Optional[int] = None
@@ -62,6 +64,14 @@ class InstallationCreate(InstallationAddressUpdate):
         if isinstance(v, str) and not v.strip():
             return None
         return v
+
+    @field_validator("products_for_installation")
+    @classmethod
+    def _require_products(cls, v: str) -> str:
+        cleaned = v.strip()
+        if len(cleaned) < 2:
+            raise ValueError("List at least one product to install")
+        return cleaned
 
 
 class InstallationAssignRequest(BaseModel):
@@ -182,6 +192,7 @@ class InstallationOut(BaseModel):
     phone: str
     email: Optional[str] = None
     invoice_number: str
+    products_for_installation: Optional[str] = None
     invoice_document: Optional[InstallationInvoiceDocumentOut] = None
     status: str
 

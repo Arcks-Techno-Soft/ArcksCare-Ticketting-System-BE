@@ -140,6 +140,7 @@ def create_installation(
         phone=body.phone,
         email=(body.email or "").strip().lower() or None,
         invoice_number=body.invoice_number.strip(),
+        products_for_installation=body.products_for_installation.strip(),
         address_line1=body.address_line1.strip(),
         address_line2=body.address_line2,
         address_line3=body.address_line3,
