@@ -269,6 +269,29 @@ class TicketListItem(BaseModel):
     created_at: datetime
 
 
+class ResolutionMediaOut(BaseModel):
+    """A photo/video attached at field sign-off, with a viewable URL."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    kind: str  # "photo" | "video"
+    filename: str
+    content_type: str
+    size_bytes: int
+    storage_url: str
+    uploaded_at: datetime
+
+    @field_validator("storage_url", mode="after")
+    @classmethod
+    def _resolve_media_url(cls, v: str) -> str:
+        from ..services.storage import get_storage  # noqa: WPS433
+
+        try:
+            return get_storage().public_url(v)
+        except Exception:
+            return v
+
+
 class ResolutionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -290,6 +313,8 @@ class ResolutionOut(BaseModel):
     field_sign_link_generated_at: Optional[datetime] = None
     # Signing token. The frontend builds the field-sign URL from this.
     customer_sign_token: str
+    # Optional photos/videos the sub-engineer attached at field sign-off.
+    media: List[ResolutionMediaOut] = []
 
     @field_validator("customer_photo_url", mode="after")
     @classmethod
