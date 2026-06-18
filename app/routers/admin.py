@@ -6,7 +6,7 @@ acknowledge / assign / warranty actions, plus engineer + event listing.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
@@ -61,6 +61,7 @@ from ..schemas.ticket import (
     TicketResponse,
 )
 from ..services.analytics import compute_analytics
+from ..services.reports import compute_ticket_report
 from ..services.auth import get_current_user, hash_password, require_role
 from ..services.email import send_engineer_assignment
 from ..services.push import notify_ticket_assigned, register_token, unregister_token
@@ -210,6 +211,19 @@ def get_analytics(
 ):
     """Aggregated metrics for the analytics dashboard."""
     return compute_analytics(db, days)
+
+
+@router.get("/reports/tickets")
+def get_ticket_report(
+    date_from: date = Query(..., description="Start of created-date range (IST, inclusive)"),
+    date_to: date = Query(..., description="End of created-date range (IST, inclusive)"),
+    db: Session = Depends(get_db),
+    _user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Date-ranged ticket report with SLA escalation analysis (Admin-only)."""
+    if date_to < date_from:
+        raise HTTPException(status_code=400, detail="date_to must be on or after date_from")
+    return compute_ticket_report(db, date_from, date_to)
 
 
 # --------------------------- lookups ------------------------------------ #
