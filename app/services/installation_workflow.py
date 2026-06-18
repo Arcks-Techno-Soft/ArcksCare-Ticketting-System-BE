@@ -69,6 +69,24 @@ def ensure_installation_invoice_document_columns(engine: Engine) -> None:
             conn.execute(text(f"ALTER TABLE {qualify('installations')} ADD COLUMN {name} {ddl}"))
 
 
+def ensure_installation_products_column(engine: Engine) -> None:
+    """Add installations.products_for_installation if it's missing.
+
+    Idempotent. `create_all` doesn't add columns to existing tables, so we
+    ALTER directly. Nullable so rows that pre-date the feature stay valid.
+    """
+    insp = inspect(engine)
+    if "installations" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # Fresh DB — create_all will include the column.
+    existing = {c["name"] for c in insp.get_columns("installations", schema=MIGRATION_SCHEMA)}
+    if "products_for_installation" in existing:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text(f"ALTER TABLE {qualify('installations')} ADD COLUMN products_for_installation TEXT")
+        )
+
+
 def ensure_installation_address_columns(engine: Engine) -> None:
     """Add installations site-address columns if any are missing."""
     insp = inspect(engine)

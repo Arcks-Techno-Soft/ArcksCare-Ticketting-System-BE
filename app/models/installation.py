@@ -42,6 +42,11 @@ class Installation(Base):
 
     invoice_number: Mapped[str] = mapped_column(String(80), index=True)
 
+    # Free-text list of products to install (one per line, name + quantity).
+    # Mandatory at the API for new installations; nullable in the DB so the
+    # idempotent migration can backfill installations that pre-date the feature.
+    products_for_installation: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Optional uploaded invoice document (PDF or image). A single file —
     # uploading again replaces it. The storage key is resolved to a viewable
     # URL on the way out (see InstallationInvoiceDocumentOut).
