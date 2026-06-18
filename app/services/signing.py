@@ -10,13 +10,13 @@ from __future__ import annotations
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..models.resolution import Resolution
+from ..models.resolution import Resolution, ResolutionMedia
 from ..models.shipment import TicketShipment
 from ..models.ticket import ServiceType, Ticket, TicketStatus
 from ..models.user import User, UserRole
@@ -343,10 +343,14 @@ def record_field_signatures(
     engineer_content_type: str = "image/png",
     photo_bytes: Optional[bytes] = None,
     photo_content_type: Optional[str] = None,
+    media_files: Optional[List[UploadFile]] = None,
 ) -> Resolution:
     """Record the customer + sub-engineer signatures collected via the remote
     link, generate the resolution PDF, and close the ticket. No auth — the
-    token is the auth factor (validated by the caller)."""
+    token is the auth factor (validated by the caller).
+
+    `media_files` is an optional list of photos/videos the sub-engineer
+    attaches as evidence of the on-site work — never blocks sign-off."""
     if resolution.field_sign_link_generated_at is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -392,6 +396,10 @@ def record_field_signatures(
     _save_customer_photo(
         storage, ticket.reference, resolution, photo_bytes, photo_content_type,
         db=db, ticket=ticket, captured_at=now,
+    )
+    _save_resolution_media(
+        storage, ticket.reference, resolution, media_files,
+        db=db, ticket=ticket,
     )
     resolution.signed_by_sub_engineer_id = sub.id
     db.flush()
@@ -547,3 +555,50 @@ def _save_customer_photo(
         captured_at or datetime.now(timezone.utc),
     )
     _log_event(db, ticket=ticket, actor=None, event_type="CUSTOMER_PHOTO_CAPTURED")
+
+
+# At most this many photos/videos per field sign-off — a sanity cap on a
+# public, unauthenticated endpoint. Per-file size is enforced by storage.
+MAX_RESOLUTION_MEDIA = 12
+
+
+def _save_resolution_media(
+    storage,
+    reference: str,
+    resolution: Resolution,
+    media_files: Optional[List[UploadFile]],
+    *,
+    db: Session,
+    ticket: Ticket,
+) -> None:
+    """Persist optional photos/videos attached at field sign-off. No-op when
+    none were supplied — media never blocks closing the ticket."""
+    from .storage import validate_upload  # local import to avoid cycle
+
+    files = [f for f in (media_files or []) if f is not None and f.filename]
+    if not files:
+        return
+    if len(files) > MAX_RESOLUTION_MEDIA:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Too many files (max {MAX_RESOLUTION_MEDIA}).",
+        )
+    for i, f in enumerate(files, start=1):
+        validate_upload(f)  # image/* or video/* only
+        ct = (f.content_type or "").lower()
+        kind = "video" if ct.startswith("video/") else "photo"
+        ext = (f.filename or "").rsplit(".", 1)[-1].lower() if "." in (f.filename or "") else "bin"
+        meta = storage.save(f, reference, f"field-{kind}-{reference}-{i}.{ext}")
+        resolution.media.append(
+            ResolutionMedia(
+                kind=kind,
+                filename=meta["filename"],
+                content_type=meta["content_type"],
+                size_bytes=meta["size_bytes"],
+                storage_url=meta["storage_url"],
+            )
+        )
+    _log_event(
+        db, ticket=ticket, actor=None, event_type="RESOLUTION_MEDIA_UPLOADED",
+        payload={"count": len(files)},
+    )

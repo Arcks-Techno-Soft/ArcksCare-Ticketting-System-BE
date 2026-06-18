@@ -134,6 +134,20 @@ def generate_resolution_pdf(ticket: Ticket, resolution: Resolution) -> bytes:
         if photo_bytes is None:
             photo_bytes = _fetch_signature(storage.public_url(resolution.customer_photo_storage_key))
 
+    # Optional photos/videos the sub-engineer attached at field sign-off.
+    # Photos are embedded; videos are listed by name (can't render in a PDF).
+    field_photos: list[bytes] = []
+    field_videos: list[str] = []
+    for m in getattr(resolution, "media", []) or []:
+        if m.kind == "video":
+            field_videos.append(m.filename)
+            continue
+        mb = _read_local_signature(m.storage_url)
+        if mb is None:
+            mb = _fetch_signature(storage.public_url(m.storage_url))
+        if mb:
+            field_photos.append(mb)
+
     # Build the PDF in memory
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -290,6 +304,11 @@ def generate_resolution_pdf(ticket: Ticket, resolution: Resolution) -> bytes:
     if photo_card is not None:
         story.append(Spacer(1, 6 * mm))
         story.append(KeepTogether([photo_card]))
+
+    # ---- Field photos/videos attached by the sub-engineer (optional) ----
+    for card in _field_media_cards(field_photos, field_videos, body):
+        story.append(Spacer(1, 6 * mm))
+        story.append(KeepTogether([card]))
 
     # ---- Footer ----
     story.append(Spacer(1, 8 * mm))
@@ -721,3 +740,69 @@ def _customer_photo_card(photo_bytes, captured_at, body_style):
         [[_card_header("CUSTOMER PHOTO", width=CARD_WIDTH_FULL)], [inner]],
         colWidths=[CARD_WIDTH_FULL],
     )
+
+
+def _field_media_cards(photo_bytes_list, video_names, body_style):
+    """Build cards for the sub-engineer's field photos (embedded) and a note
+    listing any attached videos (can't render in a PDF). Returns a list of
+    flowables — empty when there's no field media."""
+    cards = []
+    for i, pb in enumerate(photo_bytes_list, start=1):
+        # Re-decode + re-encode through PIL so a truncated/corrupt upload is
+        # skipped here rather than crashing reportlab's lazy decode at build
+        # time (media must never block sign-off).
+        try:
+            from PIL import Image as PILImage  # bundled with reportlab
+
+            pim = PILImage.open(io.BytesIO(pb))
+            pim.load()
+            if pim.mode not in ("RGB", "L"):
+                pim = pim.convert("RGB")
+            safe_buf = io.BytesIO()
+            pim.save(safe_buf, format="PNG")
+            safe_buf.seek(0)
+            img = Image(safe_buf)
+            max_w = 70 * mm
+            ratio = img.imageWidth / img.imageHeight if img.imageHeight else 1
+            img.drawWidth = max_w
+            img.drawHeight = max_w / ratio if ratio else 50 * mm
+        except Exception:
+            logger.exception("Failed to embed field photo %d (skipped)", i)
+            continue
+        caption = Paragraph(
+            f"<font color='#737373' size='8'>On-site photo {i} of {len(photo_bytes_list)}</font>",
+            body_style,
+        )
+        inner = Table([[img], [caption]], colWidths=[CARD_WIDTH_FULL])
+        inner.setStyle(TableStyle([
+            ("LEFTPADDING", (0, 0), (-1, -1), 7),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("BOX", (0, 0), (-1, -1), 0.5, CARD_BORDER),
+        ]))
+        cards.append(Table(
+            [[_card_header("ON-SITE PHOTO", width=CARD_WIDTH_FULL)], [inner]],
+            colWidths=[CARD_WIDTH_FULL],
+        ))
+
+    if video_names:
+        listing = "<br/>".join(f"• {n}" for n in video_names)
+        note = Paragraph(
+            f"<font color='#404040' size='9'>{len(video_names)} video(s) attached — "
+            f"view them in the SK-POS Care dashboard:<br/>{listing}</font>",
+            body_style,
+        )
+        inner = Table([[note]], colWidths=[CARD_WIDTH_FULL])
+        inner.setStyle(TableStyle([
+            ("LEFTPADDING", (0, 0), (-1, -1), 7),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("BOX", (0, 0), (-1, -1), 0.5, CARD_BORDER),
+        ]))
+        cards.append(Table(
+            [[_card_header("ON-SITE VIDEOS", width=CARD_WIDTH_FULL)], [inner]],
+            colWidths=[CARD_WIDTH_FULL],
+        ))
+    return cards

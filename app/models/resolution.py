@@ -10,7 +10,7 @@ Lifecycle:
      transitions the ticket to CLOSED.
 """
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -67,6 +67,37 @@ class Resolution(Base):
     )
 
     ticket: Mapped["Ticket"] = relationship(back_populates="resolution")
+
+    # Optional photos/videos the sub-engineer attaches when collecting the
+    # signatures via the remote field-signing link. Never blocks sign-off.
+    media: Mapped[List["ResolutionMedia"]] = relationship(
+        back_populates="resolution",
+        cascade="all, delete-orphan",
+        order_by="ResolutionMedia.uploaded_at",
+    )
+
+
+class ResolutionMedia(Base):
+    """A photo or video attached to a resolution by the sub-engineer at
+    field sign-off. Optional supporting evidence of the on-site work."""
+
+    __tablename__ = "resolution_media"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    resolution_id: Mapped[int] = mapped_column(
+        ForeignKey("resolutions.id", ondelete="CASCADE"), index=True
+    )
+    # "photo" or "video" — derived from the content type at upload time.
+    kind: Mapped[str] = mapped_column(String(16))
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(120))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    storage_url: Mapped[str] = mapped_column(String(500))
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    resolution: Mapped["Resolution"] = relationship(back_populates="media")
 
 
 # Type-only import to make forward references resolve cleanly.
