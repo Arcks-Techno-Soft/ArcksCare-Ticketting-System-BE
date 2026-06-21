@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from sqlalchemy import func, or_
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -104,8 +104,23 @@ def list_installations(
             )
         )
     total = q.with_entities(func.count(Installation.id)).scalar() or 0
+    # Default order mirrors the ticket inbox: group by workflow status so the
+    # installations needing attention float to the top and finished ones sink to
+    # the bottom, then newest-first within each status group. Installations have
+    # no severity, so status is the only grouping tier. The CASE follows the
+    # InstallationStatus lifecycle (NEW → … → CLOSED); unknown values sort last.
+    status_rank = case(
+        {
+            InstallationStatus.NEW.value: 0,
+            InstallationStatus.ASSIGNED.value: 1,
+            InstallationStatus.COMPLETED.value: 2,
+            InstallationStatus.CLOSED.value: 3,
+        },
+        value=Installation.status,
+        else_=99,
+    )
     rows = (
-        q.order_by(Installation.created_at.desc())
+        q.order_by(status_rank.asc(), Installation.created_at.desc())
         .offset(offset)
         .limit(limit)
         .all()
