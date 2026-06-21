@@ -80,11 +80,13 @@ from ..services.ticket_workflow import (
     add_work_note,
     assign_engineer,
     compute_close_pending,
+    end_attempt,
     force_close,
     remove_engineer,
     resolve,
     set_service_type,
     soft_delete_ticket,
+    start_attempt,
     start_work,
     update_severity,
     update_warranty,
@@ -584,6 +586,33 @@ def start_work_ticket(
 ):
     """Engineer begins active work. ACCEPTED → RESOLVING."""
     return start_work(db, _load_ticket(db, reference, user), user)
+
+
+@router.post("/tickets/{reference}/attempts", response_model=TicketResponse, status_code=201)
+def start_ticket_attempt(
+    reference: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Engineer begins a new work attempt (auto-starts work from ACCEPTED)."""
+    ticket = _load_ticket(db, reference, user)
+    start_attempt(db, ticket, user)
+    db.refresh(ticket)
+    return ticket
+
+
+@router.post("/tickets/{reference}/attempts/{attempt_id}/end", response_model=TicketResponse)
+def end_ticket_attempt(
+    reference: str,
+    attempt_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Engineer ends the given open attempt."""
+    ticket = _load_ticket(db, reference, user)
+    end_attempt(db, ticket, user, attempt_id)
+    db.refresh(ticket)
+    return ticket
 
 
 @router.post("/tickets/{reference}/resolve", response_model=TicketResponse)

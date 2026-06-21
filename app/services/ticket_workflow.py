@@ -14,12 +14,16 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import HTTPException, status
+from sqlalchemy import func, inspect, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from ..database import MIGRATION_SCHEMA, qualify
 from ..models.ticket import (
     ServiceType,
     Severity,
     Ticket,
+    TicketAttempt,
     TicketEvent,
     TicketStatus,
     WarrantyStatus,
@@ -28,6 +32,25 @@ from ..models.ticket import (
 from ..models.user import User, UserRole
 
 logger = logging.getLogger("skposcare.workflow")
+
+
+def ensure_worknote_attempt_column(engine: Engine) -> None:
+    """Add work_notes.ticket_attempt_id if it's missing.
+
+    The ticket_attempts table itself is created by `create_all`; this
+    idempotent ALTER backfills the FK column on the existing work_notes table.
+    Plain INTEGER (no FK constraint) keeps it portable across SQLite/Postgres.
+    """
+    insp = inspect(engine)
+    if "work_notes" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # Fresh DB — create_all will include the column.
+    existing = {c["name"] for c in insp.get_columns("work_notes", schema=MIGRATION_SCHEMA)}
+    if "ticket_attempt_id" in existing:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text(f"ALTER TABLE {qualify('work_notes')} ADD COLUMN ticket_attempt_id INTEGER")
+        )
 
 
 # --------------------------- helpers ------------------------------------- #
@@ -410,7 +433,18 @@ def add_work_note(
 
     _require_assignee(ticket, actor)
     _require_status(ticket, {TicketStatus.RESOLVING.value})
-    note = WorkNote(ticket_id=ticket.id, author_id=actor.id, body=body.strip())
+    open_attempt = _open_attempt(db, ticket)
+    if open_attempt is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Start an attempt before adding notes.",
+        )
+    note = WorkNote(
+        ticket_id=ticket.id,
+        ticket_attempt_id=open_attempt.id,
+        author_id=actor.id,
+        body=body.strip(),
+    )
     db.add(note)
     db.flush()  # so note.id is available for attachments
 
@@ -440,10 +474,100 @@ def add_work_note(
     return note
 
 
+# --------------------------- work attempts ------------------------------- #
+
+def _open_attempt(db: Session, ticket: Ticket) -> Optional[TicketAttempt]:
+    """The currently-open attempt (ended_at IS NULL), or None."""
+    return (
+        db.query(TicketAttempt)
+        .filter(
+            TicketAttempt.ticket_id == ticket.id,
+            TicketAttempt.ended_at.is_(None),
+        )
+        .order_by(TicketAttempt.attempt_number.desc())
+        .first()
+    )
+
+
+def start_attempt(db: Session, ticket: Ticket, actor: User) -> TicketAttempt:
+    """Begin a new work attempt. Only the assignee.
+
+    Allowed from ACCEPTED or RESOLVING; starting the first attempt from ACCEPTED
+    auto-transitions the ticket into RESOLVING so the engineer needs only one
+    tap. Only one attempt may be open at a time.
+    """
+    _require_assignee(ticket, actor)
+    _require_status(ticket, {TicketStatus.ACCEPTED.value, TicketStatus.RESOLVING.value})
+
+    # First attempt auto-starts work (ACCEPTED → RESOLVING).
+    if ticket.status == TicketStatus.ACCEPTED.value:
+        prev = ticket.status
+        ticket.status = TicketStatus.RESOLVING.value
+        ticket.resolving_started_at = datetime.now(timezone.utc)
+        _log_event(
+            db, ticket=ticket, actor=actor, event_type="RESOLVING_STARTED",
+            from_status=prev, to_status=ticket.status,
+        )
+
+    if _open_attempt(db, ticket) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="An attempt is already in progress. End it before starting another.",
+        )
+
+    last = (
+        db.query(func.max(TicketAttempt.attempt_number))
+        .filter(TicketAttempt.ticket_id == ticket.id)
+        .scalar()
+    ) or 0
+    attempt = TicketAttempt(
+        ticket_id=ticket.id,
+        attempt_number=last + 1,
+        started_by_id=actor.id,
+    )
+    db.add(attempt)
+    db.flush()
+    _log_event(
+        db, ticket=ticket, actor=actor, event_type="ATTEMPT_STARTED",
+        payload={"attempt_number": attempt.attempt_number},
+    )
+    db.commit()
+    db.refresh(attempt)
+    logger.info("Ticket %s attempt %d started by %s",
+                ticket.reference, attempt.attempt_number, actor.username)
+    return attempt
+
+
+def end_attempt(db: Session, ticket: Ticket, actor: User, attempt_id: int) -> TicketAttempt:
+    """Mark an open attempt finished. Only the assignee."""
+    _require_assignee(ticket, actor)
+    attempt = (
+        db.query(TicketAttempt)
+        .filter(TicketAttempt.id == attempt_id, TicketAttempt.ticket_id == ticket.id)
+        .one_or_none()
+    )
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="Attempt not found")
+    if attempt.ended_at is not None:
+        raise HTTPException(status_code=409, detail="This attempt has already ended.")
+
+    attempt.ended_at = datetime.now(timezone.utc)
+    _log_event(
+        db, ticket=ticket, actor=actor, event_type="ATTEMPT_ENDED",
+        payload={"attempt_number": attempt.attempt_number, "note_count": len(attempt.notes)},
+    )
+    db.commit()
+    db.refresh(attempt)
+    logger.info("Ticket %s attempt %d ended by %s",
+                ticket.reference, attempt.attempt_number, actor.username)
+    return attempt
+
+
 def resolve(db: Session, ticket: Ticket, actor: User, summary: str) -> tuple[Ticket, Optional[str]]:
     """RESOLVING → RESOLVED for site visits; RESOLVING → CLOSED for remote support.
 
-    Site visits create a Resolution row + customer signing token and wait for
+    Requires at least one completed attempt and no attempt still open. Site
+    visits create a Resolution row + customer signing token and wait for
     signatures. Remote-support tickets need no signatures or PDF, so they close
     in this single step.
 
@@ -455,6 +579,25 @@ def resolve(db: Session, ticket: Ticket, actor: User, summary: str) -> tuple[Tic
 
     _require_assignee(ticket, actor)
     _require_status(ticket, {TicketStatus.RESOLVING.value})
+
+    if _open_attempt(db, ticket) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="End the open attempt before resolving the ticket.",
+        )
+    ended_count = (
+        db.query(func.count(TicketAttempt.id))
+        .filter(
+            TicketAttempt.ticket_id == ticket.id,
+            TicketAttempt.ended_at.isnot(None),
+        )
+        .scalar()
+    ) or 0
+    if ended_count == 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Log at least one attempt before resolving the ticket.",
+        )
 
     is_remote = ticket.service_type == ServiceType.REMOTE_SUPPORT.value
 

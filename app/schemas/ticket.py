@@ -9,7 +9,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-from .auth import AdditionalEngineerOut, SubEngineerOut, UserOut
+from .auth import AdditionalEngineerOut, SubEngineerOut, TicketAttemptOut, UserOut
 
 
 class BusinessType(str, Enum):
@@ -211,6 +211,9 @@ class TicketResponse(BaseModel):
     # Extra system users (engineers) attending the same visit. View + notified
     # only; the primary `assigned_engineer` still drives the workflow.
     additional_engineers: List[AdditionalEngineerOut] = []
+
+    # Work attempts (visits across multiple days), each with its nested notes.
+    attempts: List[TicketAttemptOut] = []
 
     created_at: datetime
     attachments: List[AttachmentOut] = []

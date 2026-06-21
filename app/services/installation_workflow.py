@@ -10,13 +10,14 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import HTTPException, status
-from sqlalchemy import inspect, text
+from sqlalchemy import func, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from ..database import MIGRATION_SCHEMA, qualify
 from ..models.installation import (
     Installation,
+    InstallationAttempt,
     InstallationEvent,
     InstallationNote,
     InstallationStatus,
@@ -132,6 +133,25 @@ def ensure_installation_resolution_photo_columns(engine: Engine) -> None:
             )
 
 
+def ensure_installation_note_attempt_column(engine: Engine) -> None:
+    """Add installation_notes.installation_attempt_id if it's missing.
+
+    The installation_attempts table itself is created by `create_all`; this
+    idempotent ALTER backfills the FK column on the existing notes table.
+    Plain INTEGER (no FK constraint) keeps it portable across SQLite/Postgres.
+    """
+    insp = inspect(engine)
+    if "installation_notes" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # Fresh DB — create_all will include the column.
+    existing = {c["name"] for c in insp.get_columns("installation_notes", schema=MIGRATION_SCHEMA)}
+    if "installation_attempt_id" in existing:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text(f"ALTER TABLE {qualify('installation_notes')} ADD COLUMN installation_attempt_id INTEGER")
+        )
+
+
 def _log_event(
     db: Session,
     *,
@@ -243,8 +263,16 @@ def add_note(
         )
     _require_status(installation, {InstallationStatus.ASSIGNED.value})
 
+    open_attempt = _open_attempt(db, installation)
+    if open_attempt is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Start an attempt before adding notes.",
+        )
+
     note = InstallationNote(
         installation_id=installation.id,
+        installation_attempt_id=open_attempt.id,
         author_id=actor.id,
         body=body.strip(),
     )
@@ -440,16 +468,132 @@ def update_address(
     return installation
 
 
+# --------------------------- work attempts ------------------------------- #
+
+def _can_work(installation: Installation, actor: User) -> bool:
+    """Assignee, Admin, Manager or Owner may run attempts / notes."""
+    return (
+        actor.role in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
+        or installation.assigned_engineer_id == actor.id
+    )
+
+
+def _open_attempt(db: Session, installation: Installation) -> Optional[InstallationAttempt]:
+    """The currently-open attempt (ended_at IS NULL), or None."""
+    return (
+        db.query(InstallationAttempt)
+        .filter(
+            InstallationAttempt.installation_id == installation.id,
+            InstallationAttempt.ended_at.is_(None),
+        )
+        .order_by(InstallationAttempt.attempt_number.desc())
+        .first()
+    )
+
+
+def start_attempt(db: Session, installation: Installation, actor: User) -> InstallationAttempt:
+    """Begin a new on-site work attempt. Assignee / Admin / Manager, ASSIGNED.
+
+    Only one attempt may be open at a time. The new attempt's number is one
+    higher than the last.
+    """
+    if not _can_work(installation, actor):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the assignee, Admin, or Manager can start an attempt",
+        )
+    _require_status(installation, {InstallationStatus.ASSIGNED.value})
+    if _open_attempt(db, installation) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="An attempt is already in progress. End it before starting another.",
+        )
+
+    last = (
+        db.query(func.max(InstallationAttempt.attempt_number))
+        .filter(InstallationAttempt.installation_id == installation.id)
+        .scalar()
+    ) or 0
+    attempt = InstallationAttempt(
+        installation_id=installation.id,
+        attempt_number=last + 1,
+        started_by_id=actor.id,
+    )
+    db.add(attempt)
+    db.flush()
+    _log_event(
+        db, installation=installation, actor=actor, event_type="ATTEMPT_STARTED",
+        payload={"attempt_number": attempt.attempt_number},
+    )
+    db.commit()
+    db.refresh(attempt)
+    logger.info("Installation %s attempt %d started by %s",
+                installation.reference, attempt.attempt_number, actor.username)
+    return attempt
+
+
+def end_attempt(db: Session, installation: Installation, actor: User, attempt_id: int) -> InstallationAttempt:
+    """Mark an open attempt finished. Assignee / Admin / Manager."""
+    if not _can_work(installation, actor):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the assignee, Admin, or Manager can end an attempt",
+        )
+    attempt = (
+        db.query(InstallationAttempt)
+        .filter(
+            InstallationAttempt.id == attempt_id,
+            InstallationAttempt.installation_id == installation.id,
+        )
+        .one_or_none()
+    )
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="Attempt not found")
+    if attempt.ended_at is not None:
+        raise HTTPException(status_code=409, detail="This attempt has already ended.")
+
+    attempt.ended_at = datetime.now(timezone.utc)
+    _log_event(
+        db, installation=installation, actor=actor, event_type="ATTEMPT_ENDED",
+        payload={"attempt_number": attempt.attempt_number, "note_count": len(attempt.notes)},
+    )
+    db.commit()
+    db.refresh(attempt)
+    logger.info("Installation %s attempt %d ended by %s",
+                installation.reference, attempt.attempt_number, actor.username)
+    return attempt
+
+
 def close_installation(db: Session, installation: Installation, actor: User) -> tuple[Installation, str]:
     """Engineer (or self-assigned Admin/Manager) marks installation done.
 
-    ASSIGNED → COMPLETED. Creates the InstallationResolution row + signing
-    token, ready for customer + engineer signatures.
+    ASSIGNED → COMPLETED. Requires at least one completed attempt and no attempt
+    still open. Creates the InstallationResolution row + signing token, ready for
+    customer + engineer signatures.
     """
     from .installation_signing import create_resolution_with_token  # noqa: WPS433
 
     _require_assignee(installation, actor)
     _require_status(installation, {InstallationStatus.ASSIGNED.value})
+
+    if _open_attempt(db, installation) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="End the open attempt before finishing the installation.",
+        )
+    ended_count = (
+        db.query(func.count(InstallationAttempt.id))
+        .filter(
+            InstallationAttempt.installation_id == installation.id,
+            InstallationAttempt.ended_at.isnot(None),
+        )
+        .scalar()
+    ) or 0
+    if ended_count == 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Log at least one attempt before finishing the installation.",
+        )
 
     prev = installation.status
     installation.status = InstallationStatus.COMPLETED.value
