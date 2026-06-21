@@ -11,14 +11,14 @@ from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import RedirectResponse
-from sqlalchemy import func, or_
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models.shipment import TicketShipment, TicketShipmentItem
 from ..models.spare import SpareCatalog, TicketSpare
 from ..models.sub_engineer import SubEngineer, SubEngineerRoster
-from ..models.ticket import ServiceType, Ticket, TicketEvent, WorkNote
+from ..models.ticket import ServiceType, Severity, Ticket, TicketEvent, TicketStatus, WorkNote
 from ..models.ticket_engineer import TicketEngineer
 from ..models.user import User, UserRole
 from ..schemas.auth import (
@@ -284,8 +284,41 @@ def list_tickets(
         )
     # COUNT runs against the same filtered query so totals stay accurate.
     total = q.with_entities(func.count(Ticket.id)).scalar() or 0
+    # Default order for the admin inbox: group by workflow status so the
+    # tickets needing attention float to the top and finished ones sink to the
+    # bottom. Within a status group, most severe first (CRITICAL → … → LOW),
+    # then newest-first as the final tiebreaker. The CASEs follow the
+    # TicketStatus lifecycle (OPEN → … → CLOSED) and Severity scale; unknown
+    # values sort last.
+    status_rank = case(
+        {
+            TicketStatus.OPEN.value: 0,
+            TicketStatus.ACKNOWLEDGED.value: 1,
+            TicketStatus.ASSIGNED.value: 2,
+            TicketStatus.ACCEPTED.value: 3,
+            TicketStatus.RESOLVING.value: 4,
+            TicketStatus.RESOLVED.value: 5,
+            TicketStatus.CLOSED.value: 6,
+        },
+        value=Ticket.status,
+        else_=99,
+    )
+    severity_rank = case(
+        {
+            Severity.CRITICAL.value: 0,
+            Severity.HIGH.value: 1,
+            Severity.MEDIUM.value: 2,
+            Severity.LOW.value: 3,
+        },
+        value=Ticket.severity,
+        else_=99,
+    )
     rows = (
-        q.order_by(Ticket.created_at.desc())
+        q.order_by(
+            status_rank.asc(),
+            severity_rank.asc(),
+            Ticket.created_at.desc(),
+        )
         .offset(offset)
         .limit(limit)
         .all()
