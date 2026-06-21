@@ -89,9 +89,11 @@ def _bootstrap_db() -> None:
         ensure_raised_by_column,
         ensure_ticket_soft_delete_columns,
     )
+    from .services.ticket_workflow import ensure_worknote_attempt_column
     from .services.installation_workflow import (
         ensure_installation_address_columns,
         ensure_installation_invoice_document_columns,
+        ensure_installation_note_attempt_column,
         ensure_installation_products_column,
         ensure_installation_resolution_photo_columns,
     )
@@ -113,6 +115,10 @@ def _bootstrap_db() -> None:
     ensure_installation_products_column(engine)
     ensure_installation_address_columns(engine)
     ensure_installation_resolution_photo_columns(engine)
+    # Work-attempt FK columns on the existing notes tables (the attempt tables
+    # themselves are created by create_all below).
+    ensure_worknote_attempt_column(engine)
+    ensure_installation_note_attempt_column(engine)
     Base.metadata.create_all(bind=engine)
     logger.info("Database ready: %s", settings.database_url.split("@")[-1])
 

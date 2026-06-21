@@ -38,8 +38,10 @@ from ..services.installation_workflow import (
     add_note,
     assign,
     close_installation,
+    end_attempt,
     remove_invoice_document,
     set_invoice_document,
+    start_attempt,
     update_address,
     update_invoice,
 )
@@ -345,6 +347,35 @@ async def add_note_endpoint(
                 )
         saved = save_uploads(images, inst.reference)
     return add_note(db, inst, user, body, attachments=saved)
+
+
+# --------------------------- attempts ----------------------------------- #
+
+@router.post("/{reference}/attempts", response_model=InstallationOut, status_code=201)
+def start_attempt_endpoint(
+    reference: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Begin a new on-site work attempt. Returns the full installation."""
+    inst = _load(db, reference)
+    start_attempt(db, inst, user)
+    db.refresh(inst)
+    return inst
+
+
+@router.post("/{reference}/attempts/{attempt_id}/end", response_model=InstallationOut)
+def end_attempt_endpoint(
+    reference: str,
+    attempt_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """End the given open attempt. Returns the full installation."""
+    inst = _load(db, reference)
+    end_attempt(db, inst, user, attempt_id)
+    db.refresh(inst)
+    return inst
 
 
 # --------------------------- close -------------------------------------- #

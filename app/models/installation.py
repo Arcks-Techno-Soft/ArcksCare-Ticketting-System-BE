@@ -98,6 +98,12 @@ class Installation(Base):
         cascade="all, delete-orphan",
         order_by="InstallationNote.created_at",
     )
+    # Work attempts (visits across multiple days). Each groups its own notes.
+    attempts: Mapped[List["InstallationAttempt"]] = relationship(
+        back_populates="installation",
+        cascade="all, delete-orphan",
+        order_by="InstallationAttempt.attempt_number",
+    )
     events: Mapped[List["InstallationEvent"]] = relationship(
         back_populates="installation",
         cascade="all, delete-orphan",
@@ -142,6 +148,11 @@ class InstallationNote(Base):
     installation_id: Mapped[int] = mapped_column(
         ForeignKey("installations.id", ondelete="CASCADE"), index=True
     )
+    # The work attempt this note belongs to. Nullable so notes that pre-date the
+    # attempts feature stay valid; new notes are always tied to the open attempt.
+    installation_attempt_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("installation_attempts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     author_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     body: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
@@ -149,6 +160,7 @@ class InstallationNote(Base):
     )
 
     installation: Mapped["Installation"] = relationship(back_populates="notes")
+    attempt: Mapped[Optional["InstallationAttempt"]] = relationship(back_populates="notes")
     author: Mapped["User"] = relationship(lazy="joined")
     attachments: Mapped[List["InstallationNoteAttachment"]] = relationship(
         back_populates="note",
@@ -175,6 +187,39 @@ class InstallationNoteAttachment(Base):
     )
 
     note: Mapped["InstallationNote"] = relationship(back_populates="attachments")
+
+
+class InstallationAttempt(Base):
+    """A single on-site work attempt for an installation.
+
+    Engineers often need several visits across multiple days. Each attempt
+    groups the notes + photos captured during it. `ended_at IS NULL` means the
+    attempt is still open (work in progress); only one attempt may be open at a
+    time. Finishing the installation requires at least one ended attempt.
+    """
+
+    __tablename__ = "installation_attempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    installation_id: Mapped[int] = mapped_column(
+        ForeignKey("installations.id", ondelete="CASCADE"), index=True
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    installation: Mapped["Installation"] = relationship(back_populates="attempts")
+    started_by: Mapped[Optional["User"]] = relationship(lazy="joined")
+    notes: Mapped[List["InstallationNote"]] = relationship(
+        back_populates="attempt",
+        order_by="InstallationNote.created_at",
+    )
 
 
 class InstallationEvent(Base):

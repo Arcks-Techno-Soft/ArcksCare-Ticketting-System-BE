@@ -138,6 +138,12 @@ class Ticket(Base):
         cascade="all, delete-orphan",
         order_by="WorkNote.created_at",
     )
+    # Work attempts (visits across multiple days). Each groups its own notes.
+    attempts: Mapped[List["TicketAttempt"]] = relationship(
+        back_populates="ticket",
+        cascade="all, delete-orphan",
+        order_by="TicketAttempt.attempt_number",
+    )
     sub_engineers: Mapped[List["SubEngineer"]] = relationship(
         back_populates="ticket",
         cascade="all, delete-orphan",
@@ -219,6 +225,11 @@ class WorkNote(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     ticket_id: Mapped[int] = mapped_column(ForeignKey("tickets.id", ondelete="CASCADE"), index=True)
+    # The work attempt this note belongs to. Nullable so notes that pre-date the
+    # attempts feature stay valid; new notes are always tied to the open attempt.
+    ticket_attempt_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("ticket_attempts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     author_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     body: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
@@ -226,6 +237,7 @@ class WorkNote(Base):
     )
 
     ticket: Mapped["Ticket"] = relationship(back_populates="work_notes")
+    attempt: Mapped[Optional["TicketAttempt"]] = relationship(back_populates="notes")
     author: Mapped["User"] = relationship(lazy="joined")
     attachments: Mapped[List["WorkNoteAttachment"]] = relationship(
         back_populates="work_note",
@@ -252,6 +264,37 @@ class WorkNoteAttachment(Base):
     )
 
     work_note: Mapped["WorkNote"] = relationship(back_populates="attachments")
+
+
+class TicketAttempt(Base):
+    """A single work attempt for a ticket.
+
+    Engineers often need several visits across multiple days before a ticket is
+    resolved. Each attempt groups the work notes + photos captured during it.
+    `ended_at IS NULL` means the attempt is still open; only one attempt may be
+    open at a time. Resolving the ticket requires at least one ended attempt.
+    """
+
+    __tablename__ = "ticket_attempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ticket_id: Mapped[int] = mapped_column(ForeignKey("tickets.id", ondelete="CASCADE"), index=True)
+    attempt_number: Mapped[int] = mapped_column(Integer)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    ticket: Mapped["Ticket"] = relationship(back_populates="attempts")
+    started_by: Mapped[Optional["User"]] = relationship(lazy="joined")
+    notes: Mapped[List["WorkNote"]] = relationship(
+        back_populates="attempt",
+        order_by="WorkNote.created_at",
+    )
 
 
 class TicketAttachment(Base):

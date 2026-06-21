@@ -145,6 +145,19 @@ class WorkNoteOut(BaseModel):
     attachments: list[WorkNoteAttachmentOut] = []
 
 
+class TicketAttemptOut(BaseModel):
+    """A work attempt with its notes (and their photos) nested inside."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    attempt_number: int
+    started_at: datetime
+    ended_at: Optional[datetime] = None
+    started_by: Optional[UserOut] = None
+    notes: list[WorkNoteOut] = []
+
+
 class SubEngineerOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

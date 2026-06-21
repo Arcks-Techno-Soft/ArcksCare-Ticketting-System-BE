@@ -137,6 +137,19 @@ class InstallationNoteOut(BaseModel):
     attachments: List[InstallationNoteAttachmentOut] = []
 
 
+class InstallationAttemptOut(BaseModel):
+    """A work attempt with its notes (and their photos) nested inside."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    attempt_number: int
+    started_at: datetime
+    ended_at: Optional[datetime] = None
+    started_by: Optional[UserOut] = None
+    notes: List[InstallationNoteOut] = []
+
+
 class InstallationEventOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -214,6 +227,7 @@ class InstallationOut(BaseModel):
     created_at: datetime
 
     resolution: Optional[InstallationResolutionOut] = None
+    attempts: List[InstallationAttemptOut] = []
 
 
 class InstallationListItem(BaseModel):
