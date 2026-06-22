@@ -276,6 +276,17 @@ def _require_admin_or_owner(actor: User, action: str) -> None:
         raise HTTPException(status_code=403, detail=f"Only Owner or Admin can {action}")
 
 
+def payment_required(ticket: Ticket) -> bool:
+    """Thin wrapper over Ticket.payment_required (the single source of truth)."""
+    return ticket.payment_required
+
+
+def payment_blocks_close(ticket: Ticket) -> bool:
+    """Thin wrapper over Ticket.payment_blocks_close — payment required but not
+    yet COLLECTED, so the ticket can't close."""
+    return ticket.payment_blocks_close
+
+
 def compute_close_pending(ticket: Ticket) -> list[str]:
     """Human-readable list of everything still incomplete on a ticket.
 
@@ -318,12 +329,7 @@ def compute_close_pending(ticket: Ticket) -> list[str]:
             pending.append(f"Fee not recorded for sub-engineer {se.name}")
     if any(sh.delivered_at is None for sh in ticket.shipments):
         pending.append("A parts shipment is not yet marked delivered")
-    # New-flow out-of-warranty tickets can't close until payment is recorded.
-    if (
-        ticket.payment_status is not None
-        and ticket.warranty_status == WarrantyStatus.OUT_OF_WARRANTY.value
-        and ticket.payment_status != PaymentStatus.COLLECTED.value
-    ):
+    if payment_blocks_close(ticket):
         pending.append("Payment not collected")
     return pending
 
@@ -354,8 +360,9 @@ def force_close(db: Session, ticket: Ticket, actor: User, reason: str) -> Ticket
 
 
 def collect_payment(db: Session, ticket: Ticket, actor: User, amount_inr: int) -> Ticket:
-    """Record the out-of-warranty payment and close the ticket if it's otherwise
-    done. Allowed for Admin/Owner/Manager or the assigned engineer.
+    """Record the payment due on a ticket and close it if it's otherwise done.
+    Applies to out-of-warranty tickets and to covered tickets that have charges.
+    Allowed for Admin/Owner/Manager or the assigned engineer.
 
     If both signatures + PDF are already in place (ticket is RESOLVED), recording
     payment closes it immediately. If the engineer hasn't signed off yet, this
@@ -374,15 +381,22 @@ def collect_payment(db: Session, ticket: Ticket, actor: User, amount_inr: int) -
             status_code=409,
             detail="Payment tracking isn't enabled for this ticket.",
         )
-    if ticket.warranty_status != WarrantyStatus.OUT_OF_WARRANTY.value:
+    if not payment_required(ticket):
         raise HTTPException(
             status_code=409,
-            detail="Payment only applies to out-of-warranty tickets.",
+            detail="No payment is due on this ticket.",
         )
     if ticket.payment_status == PaymentStatus.COLLECTED.value:
         raise HTTPException(status_code=409, detail="Payment is already recorded.")
+    # Out-of-warranty must collect a positive amount; covered tickets (under
+    # warranty / AMC) may record ₹0 (e.g. goodwill — nothing actually charged).
     if amount_inr < 0:
         raise HTTPException(status_code=400, detail="Amount can't be negative.")
+    if ticket.warranty_status == WarrantyStatus.OUT_OF_WARRANTY.value and amount_inr <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Enter an amount greater than zero — ₹0 can't be collected.",
+        )
 
     ticket.payment_status = PaymentStatus.COLLECTED.value
     ticket.payment_amount_inr = int(amount_inr)

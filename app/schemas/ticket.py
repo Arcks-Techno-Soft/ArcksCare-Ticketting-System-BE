@@ -184,10 +184,12 @@ class TicketResponse(BaseModel):
     warranty_status: str
     service_type: str
 
-    # Out-of-warranty payment tracking. NULL = legacy ticket (never gated).
-    # PENDING / COLLECTED for new-flow tickets; an out-of-warranty ticket holds
-    # at RESOLVED with payment_status PENDING until payment is recorded.
+    # Payment tracking. NULL payment_status = legacy ticket (never gated).
+    # PENDING / COLLECTED for new-flow tickets. `payment_required` is the
+    # computed gate (out-of-warranty, or covered + charges) the UIs key off so
+    # they don't re-derive the rule.
     payment_status: Optional[str] = None
+    payment_required: bool = False
     payment_amount_inr: Optional[int] = None
     payment_collected_at: Optional[datetime] = None
     payment_collected_by: Optional[UserOut] = None

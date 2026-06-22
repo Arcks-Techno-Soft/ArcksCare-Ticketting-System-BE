@@ -213,6 +213,37 @@ class Ticket(Base):
         foreign_keys=[payment_collected_by_id], lazy="joined"
     )
 
+    # --- payment gating (single source of truth; surfaced in the API too) ---
+
+    @property
+    def has_recorded_charges(self) -> bool:
+        """Engineer recorded something billable: a non-zero service fee or any
+        spare. (Under warranty the billable total is always ₹0, so we read the
+        raw recorded amounts.)"""
+        return (self.service_fee_inr or 0) > 0 or len(self.spares) > 0
+
+    @property
+    def payment_required(self) -> bool:
+        """Whether this ticket must record payment before it can CLOSE. Legacy
+        tickets (payment_status NULL) are exempt. Out-of-warranty always needs
+        it; covered tickets (under warranty / AMC) need it only once charges are
+        added. UNKNOWN warranty is never gated."""
+        if self.payment_status is None:
+            return False
+        if self.warranty_status == WarrantyStatus.OUT_OF_WARRANTY.value:
+            return True
+        if self.warranty_status in (
+            WarrantyStatus.UNDER_WARRANTY.value,
+            WarrantyStatus.AMC.value,
+        ):
+            return self.has_recorded_charges
+        return False
+
+    @property
+    def payment_blocks_close(self) -> bool:
+        """Payment required but not yet COLLECTED — the ticket can't close."""
+        return self.payment_required and self.payment_status != PaymentStatus.COLLECTED.value
+
 
 class TicketEvent(Base):
     """Audit log of every meaningful state change on a ticket."""
