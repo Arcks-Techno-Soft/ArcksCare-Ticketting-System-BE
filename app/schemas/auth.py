@@ -26,6 +26,17 @@ class UserOut(BaseModel):
     district: Optional[str] = None
 
 
+class EngineerOption(UserOut):
+    """An engineer for the 'assign to' picker, annotated with their current
+    workload so the UI can surface the least-busy (and recommend free) ones.
+
+    `open_ticket_count` = tickets assigned to this engineer that are not yet
+    CLOSED (and not soft-deleted) — i.e. what's currently on their plate.
+    """
+
+    open_ticket_count: int = 0
+
+
 class CreateUserRequest(BaseModel):
     first_name: str = Field(min_length=1, max_length=60)
     last_name: str = Field(min_length=1, max_length=60)

@@ -22,6 +22,7 @@ from ..models.ticket import ServiceType, Severity, Ticket, TicketEvent, TicketSt
 from ..models.ticket_engineer import TicketEngineer
 from ..models.user import User, UserRole
 from ..schemas.auth import (
+    EngineerOption,
     AddSubEngineerRequest,
     AddTicketSpareRequest,
     AddWorkNoteRequest,
@@ -230,15 +231,33 @@ def get_ticket_report(
 
 # --------------------------- lookups ------------------------------------ #
 
-@router.get("/engineers", response_model=List[UserOut])
+@router.get("/engineers", response_model=List[EngineerOption])
 def list_engineers(db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
-    """Active engineers — used to populate the 'assign to' dropdown."""
-    return (
+    """Active engineers for the 'assign to' picker, each annotated with their
+    current open-ticket count so the UI can recommend the least-busy ones."""
+    engineers = (
         db.query(User)
         .filter(User.role == UserRole.ENGINEER.value, User.active.is_(True))
         .order_by(User.name)
         .all()
     )
+    # Per-engineer count of active (not CLOSED, not deleted) assigned tickets.
+    counts = dict(
+        db.query(Ticket.assigned_engineer_id, func.count(Ticket.id))
+        .filter(
+            Ticket.assigned_engineer_id.isnot(None),
+            Ticket.status != TicketStatus.CLOSED.value,
+            Ticket.deleted_at.is_(None),
+        )
+        .group_by(Ticket.assigned_engineer_id)
+        .all()
+    )
+    out: List[EngineerOption] = []
+    for u in engineers:
+        item = EngineerOption.model_validate(u)
+        item.open_ticket_count = int(counts.get(u.id, 0))
+        out.append(item)
+    return out
 
 
 # --------------------------- ticket list + detail ----------------------- #
