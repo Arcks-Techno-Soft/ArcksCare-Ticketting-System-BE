@@ -442,10 +442,18 @@ def installation_pdf(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Short-lived link to the generated installation PDF (Admin/Manager)."""
-    if user.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
-        raise HTTPException(status_code=403, detail="Manager or Admin only")
+    """Short-lived link to the generated installation PDF.
+
+    Accessible to the Admin, a Manager, or the engineer the installation is
+    assigned to (mirrors the ticket resolution PDF)."""
     inst = _load(db, reference)
+    if (
+        user.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
+        and inst.assigned_engineer_id != user.id
+    ):
+        raise HTTPException(
+            status_code=403, detail="Manager, Admin, or the assigned engineer only"
+        )
     res = inst.resolution
     if res is None or not res.pdf_storage_key:
         raise HTTPException(
