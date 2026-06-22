@@ -179,6 +179,7 @@ class TicketResponse(BaseModel):
     product_category: str
     serial_number: str
     issue_category: str
+    description: Optional[str] = None
     severity: str
     status: str
     warranty_status: str
