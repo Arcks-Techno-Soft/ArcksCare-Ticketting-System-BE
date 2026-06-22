@@ -274,6 +274,11 @@ class UpdateServiceFeeRequest(BaseModel):
     service_fee_inr: int = Field(ge=0, le=10_000_000)
 
 
+class CollectPaymentRequest(BaseModel):
+    """Record the amount actually collected for an out-of-warranty ticket."""
+    amount_collected_inr: int = Field(ge=0, le=10_000_000)
+
+
 class ChargeLineItem(BaseModel):
     id: int
     catalog_id: Optional[int] = None

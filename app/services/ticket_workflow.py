@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from ..database import MIGRATION_SCHEMA, qualify
 from ..models.ticket import (
+    PaymentStatus,
     ServiceType,
     Severity,
     Ticket,
@@ -317,6 +318,13 @@ def compute_close_pending(ticket: Ticket) -> list[str]:
             pending.append(f"Fee not recorded for sub-engineer {se.name}")
     if any(sh.delivered_at is None for sh in ticket.shipments):
         pending.append("A parts shipment is not yet marked delivered")
+    # New-flow out-of-warranty tickets can't close until payment is recorded.
+    if (
+        ticket.payment_status is not None
+        and ticket.warranty_status == WarrantyStatus.OUT_OF_WARRANTY.value
+        and ticket.payment_status != PaymentStatus.COLLECTED.value
+    ):
+        pending.append("Payment not collected")
     return pending
 
 
@@ -342,6 +350,68 @@ def force_close(db: Session, ticket: Ticket, actor: User, reason: str) -> Ticket
     db.refresh(ticket)
     logger.info("Ticket %s force-closed from %s by %s: %s",
                 ticket.reference, prev, actor.username, reason)
+    return ticket
+
+
+def collect_payment(db: Session, ticket: Ticket, actor: User, amount_inr: int) -> Ticket:
+    """Record the out-of-warranty payment and close the ticket if it's otherwise
+    done. Allowed for Admin/Owner/Manager or the assigned engineer.
+
+    If both signatures + PDF are already in place (ticket is RESOLVED), recording
+    payment closes it immediately. If the engineer hasn't signed off yet, this
+    just marks payment collected — the ticket then closes at sign-off.
+    """
+    is_staff = actor.role in (
+        UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value
+    )
+    if not (is_staff or ticket.assigned_engineer_id == actor.id):
+        raise HTTPException(
+            status_code=403,
+            detail="Only an admin, manager, or the assigned engineer can record payment.",
+        )
+    if ticket.payment_status is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Payment tracking isn't enabled for this ticket.",
+        )
+    if ticket.warranty_status != WarrantyStatus.OUT_OF_WARRANTY.value:
+        raise HTTPException(
+            status_code=409,
+            detail="Payment only applies to out-of-warranty tickets.",
+        )
+    if ticket.payment_status == PaymentStatus.COLLECTED.value:
+        raise HTTPException(status_code=409, detail="Payment is already recorded.")
+    if amount_inr < 0:
+        raise HTTPException(status_code=400, detail="Amount can't be negative.")
+
+    ticket.payment_status = PaymentStatus.COLLECTED.value
+    ticket.payment_amount_inr = int(amount_inr)
+    ticket.payment_collected_at = datetime.now(timezone.utc)
+    ticket.payment_collected_by_id = actor.id
+    _log_event(
+        db, ticket=ticket, actor=actor, event_type="PAYMENT_COLLECTED",
+        payload={"amount_inr": int(amount_inr)},
+    )
+
+    # Close now if the resolution is otherwise complete (signatures + PDF done).
+    res = ticket.resolution
+    if (
+        ticket.status == TicketStatus.RESOLVED.value
+        and res is not None
+        and res.customer_signed_at is not None
+        and res.engineer_signed_at is not None
+        and res.pdf_generated_at is not None
+    ):
+        prev = ticket.status
+        ticket.status = TicketStatus.CLOSED.value
+        _log_event(
+            db, ticket=ticket, actor=actor, event_type="CLOSED",
+            from_status=prev, to_status=ticket.status,
+        )
+    db.commit()
+    db.refresh(ticket)
+    logger.info("Payment ₹%s recorded for %s by %s (status=%s)",
+                amount_inr, ticket.reference, actor.username, ticket.status)
     return ticket
 
 

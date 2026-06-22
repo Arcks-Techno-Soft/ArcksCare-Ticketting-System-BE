@@ -80,6 +80,7 @@ def _bootstrap_db() -> None:
     from .services.shipments import ensure_shipment_delivered_at_column
     from .services.signing import ensure_resolution_field_signing_columns
     from .services.spares import (
+        ensure_payment_columns,
         ensure_service_fee_column,
         ensure_service_type_column,
         seed_spare_catalog,
@@ -105,6 +106,7 @@ def _bootstrap_db() -> None:
     # Run column migrations first so the freshly-mapped ORM matches the DB.
     ensure_service_fee_column(engine)
     ensure_service_type_column(engine)
+    ensure_payment_columns(engine)
     ensure_user_profile_columns(engine)
     ensure_shipment_delivered_at_column(engine)
     ensure_resolution_field_signing_columns(engine)

@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..models.resolution import Resolution, ResolutionMedia
 from ..models.shipment import TicketShipment
-from ..models.ticket import ServiceType, Ticket, TicketStatus
+from ..models.ticket import PaymentStatus, ServiceType, Ticket, TicketStatus, WarrantyStatus
 from ..models.user import User, UserRole
 from .pdf_generator import generate_resolution_pdf
 from .storage import get_storage
@@ -98,6 +98,17 @@ def _assert_parts_delivered(db: Session, ticket: Ticket) -> None:
                 "mark every shipment delivered before closing the ticket."
             ),
         )
+
+
+def _payment_blocks_close(ticket: Ticket) -> bool:
+    """True when an out-of-warranty ticket can't CLOSE yet because payment
+    hasn't been recorded. Legacy tickets (payment_status is NULL) are exempt,
+    so this only ever affects tickets created after the feature shipped."""
+    return (
+        ticket.payment_status is not None
+        and ticket.warranty_status == WarrantyStatus.OUT_OF_WARRANTY.value
+        and ticket.payment_status != PaymentStatus.COLLECTED.value
+    )
 
 
 # ----------------------------- public API -------------------------------- #
@@ -266,19 +277,26 @@ def record_engineer_signature(
     resolution.pdf_storage_key = pdf_meta["storage_url"]
     resolution.pdf_generated_at = datetime.now(timezone.utc)
 
-    prev = ticket.status
-    ticket.status = TicketStatus.CLOSED.value
     _log_event(
         db, ticket=ticket, actor=actor, event_type="ENGINEER_SIGNED",
     )
-    _log_event(
-        db, ticket=ticket, actor=actor, event_type="CLOSED",
-        from_status=prev, to_status=ticket.status,
-    )
+    if _payment_blocks_close(ticket):
+        # Signatures + PDF are done, but payment is still owed on this
+        # out-of-warranty ticket — keep it RESOLVED and flag payment pending.
+        # An admin/manager/engineer records the payment later to close it.
+        _log_event(db, ticket=ticket, actor=actor, event_type="PAYMENT_PENDING")
+        logger.info("Engineer signed for %s — held RESOLVED pending payment", ticket.reference)
+    else:
+        prev = ticket.status
+        ticket.status = TicketStatus.CLOSED.value
+        _log_event(
+            db, ticket=ticket, actor=actor, event_type="CLOSED",
+            from_status=prev, to_status=ticket.status,
+        )
+        logger.info("Engineer signed + PDF generated for %s — closed", ticket.reference)
     db.commit()
     db.refresh(ticket)
     db.refresh(resolution)
-    logger.info("Engineer signed + PDF generated for %s", ticket.reference)
     return resolution
 
 
@@ -415,8 +433,6 @@ def record_field_signatures(
     resolution.pdf_storage_key = pdf_meta["storage_url"]
     resolution.pdf_generated_at = now
 
-    prev = ticket.status
-    ticket.status = TicketStatus.CLOSED.value
     _log_event(
         db, ticket=ticket, actor=None, event_type="CUSTOMER_SIGNED",
         payload={"signer_name": resolution.customer_signer_name},
@@ -425,10 +441,16 @@ def record_field_signatures(
         db, ticket=ticket, actor=None, event_type="SUB_ENGINEER_SIGNED",
         payload={"signer_name": sub.name},
     )
-    _log_event(
-        db, ticket=ticket, actor=None, event_type="CLOSED",
-        from_status=prev, to_status=ticket.status,
-    )
+    if _payment_blocks_close(ticket):
+        # Out-of-warranty payment still owed — keep RESOLVED, flag pending.
+        _log_event(db, ticket=ticket, actor=None, event_type="PAYMENT_PENDING")
+    else:
+        prev = ticket.status
+        ticket.status = TicketStatus.CLOSED.value
+        _log_event(
+            db, ticket=ticket, actor=None, event_type="CLOSED",
+            from_status=prev, to_status=ticket.status,
+        )
     db.commit()
     db.refresh(ticket)
     db.refresh(resolution)

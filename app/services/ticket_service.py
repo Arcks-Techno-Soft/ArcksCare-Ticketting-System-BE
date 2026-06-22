@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..database import MIGRATION_SCHEMA, qualify
-from ..models.ticket import Ticket, TicketStatus
+from ..models.ticket import PaymentStatus, Ticket, TicketStatus
 from ..models.user import User
 from ..schemas.ticket import TicketCreate
 from ..utils.ticket_id import make_reference
@@ -118,6 +118,10 @@ def create_ticket(
         description=payload.description.strip(),
         preferred_contact_time=(payload.preferred_contact_time or "").strip() or None,
         status=TicketStatus.OPEN.value,
+        # Marks this as a new-flow ticket: once out-of-warranty, it must have
+        # payment COLLECTED before it can close. Legacy tickets have NULL here
+        # and are never payment-gated.
+        payment_status=PaymentStatus.PENDING.value,
         reference="PENDING",  # placeholder, replaced below
     )
     db.add(ticket)

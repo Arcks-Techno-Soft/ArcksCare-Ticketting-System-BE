@@ -184,6 +184,14 @@ class TicketResponse(BaseModel):
     warranty_status: str
     service_type: str
 
+    # Out-of-warranty payment tracking. NULL = legacy ticket (never gated).
+    # PENDING / COLLECTED for new-flow tickets; an out-of-warranty ticket holds
+    # at RESOLVED with payment_status PENDING until payment is recorded.
+    payment_status: Optional[str] = None
+    payment_amount_inr: Optional[int] = None
+    payment_collected_at: Optional[datetime] = None
+    payment_collected_by: Optional[UserOut] = None
+
     # Who raised the ticket. NULL = customer self-submitted via the public web
     # form; set = staff member (typically an Engineer) who submitted on the
     # customer's behalf from the app.

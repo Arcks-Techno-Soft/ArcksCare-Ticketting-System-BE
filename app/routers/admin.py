@@ -30,6 +30,7 @@ from ..schemas.auth import (
     AdditionalEngineerOut,
     AssignEngineerRequest,
     ChargesSummary,
+    CollectPaymentRequest,
     CreateRosterSubEngineerRequest,
     CreateUserRequest,
     CreateUserResponse,
@@ -81,6 +82,7 @@ from ..services.ticket_workflow import (
     add_engineer,
     add_work_note,
     assign_engineer,
+    collect_payment,
     compute_close_pending,
     end_attempt,
     force_close,
@@ -548,6 +550,19 @@ def force_close_ticket(
     """Admin/Owner override: close a ticket from ANY status (reason required)."""
     ticket = _load_ticket(db, reference, user)
     return force_close(db, ticket, user, body.reason)
+
+
+@router.post("/tickets/{reference}/collect-payment", response_model=TicketResponse)
+def collect_ticket_payment(
+    reference: str,
+    body: CollectPaymentRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Record the payment collected for an out-of-warranty ticket and close it
+    if it's otherwise done. Admin/Manager or the assigned engineer."""
+    ticket = _load_ticket(db, reference, user)
+    return collect_payment(db, ticket, user, body.amount_collected_inr)
 
 
 @router.delete("/tickets/{reference}", response_model=TicketResponse)

@@ -47,6 +47,14 @@ class ServiceType(str, Enum):
     REMOTE_SUPPORT = "REMOTE_SUPPORT"
 
 
+class PaymentStatus(str, Enum):
+    """Out-of-warranty payment tracking. NULL on the column (no enum value)
+    means a *legacy* ticket created before this feature — those never gate on
+    payment and close exactly as before. New tickets are created PENDING."""
+    PENDING = "PENDING"        # payment owed, not yet collected
+    COLLECTED = "COLLECTED"    # payment received — ticket may close
+
+
 class Ticket(Base):
     __tablename__ = "tickets"
 
@@ -124,11 +132,22 @@ class Ticket(Base):
     # Engineer's written resolution summary (filled when status goes RESOLVING→RESOLVED).
     resolution_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    # Service charge in INR, editable by the engineer. Default 500.
-    # NOTE: added post-Phase-2.4 — a startup ALTER fills this in for existing
-    # SQLite/Postgres rows that pre-date the column. Always treat the value as
-    # already-present here.
-    service_fee_inr: Mapped[int] = mapped_column(Integer, nullable=False, server_default="800", default=800)
+    # Service charge in INR, editable by the engineer. Defaults to 0 — the
+    # engineer fills in the actual charge on-site. (Historically defaulted to
+    # 800; existing rows keep whatever they were created with.)
+    service_fee_inr: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
+
+    # Out-of-warranty payment tracking. NULL = legacy ticket (pre-feature) and
+    # is never payment-gated. New tickets start PENDING; an out-of-warranty
+    # ticket can't CLOSE until this is COLLECTED. See services/signing.py.
+    payment_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    payment_amount_inr: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    payment_collected_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    payment_collected_by_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
 
     attachments: Mapped[List["TicketAttachment"]] = relationship(
         back_populates="ticket", cascade="all, delete-orphan"
@@ -189,6 +208,9 @@ class Ticket(Base):
     )
     deleted_by: Mapped[Optional["User"]] = relationship(
         foreign_keys=[deleted_by_id], lazy="joined"
+    )
+    payment_collected_by: Mapped[Optional["User"]] = relationship(
+        foreign_keys=[payment_collected_by_id], lazy="joined"
     )
 
 

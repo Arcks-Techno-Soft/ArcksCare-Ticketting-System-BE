@@ -177,6 +177,59 @@ def ensure_service_type_column(engine: Engine) -> None:
     ) from last_exc
 
 
+def ensure_payment_columns(engine: Engine) -> None:
+    """Add the out-of-warranty payment-tracking columns to tickets if missing.
+
+    All four are nullable with no default, so existing rows stay NULL — which
+    the workflow treats as 'legacy ticket, never payment-gated'. That's how the
+    feature stays invisible to tickets created before it. Idempotent; uses the
+    same bounded-lock retry as ensure_service_type_column for safe deploys.
+    """
+    insp = inspect(engine)
+    if "tickets" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # Fresh DB — create_all will include the columns.
+
+    is_pg = engine.dialect.name == "postgresql"
+    ts_type = "TIMESTAMP WITH TIME ZONE" if is_pg else "DATETIME"
+    wanted = [
+        ("payment_status", "VARCHAR(20)"),
+        ("payment_amount_inr", "INTEGER"),
+        ("payment_collected_at", ts_type),
+        ("payment_collected_by_id", "INTEGER"),
+    ]
+    for name, coltype in wanted:
+        if _has_column(engine, "tickets", name):
+            continue
+        ddl = f"ALTER TABLE {qualify('tickets')} ADD COLUMN {name} {coltype}"
+        attempts = 6
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                with engine.begin() as conn:
+                    if is_pg:
+                        conn.execute(text("SET LOCAL lock_timeout = '4s'"))
+                        conn.execute(text("SET LOCAL statement_timeout = '120s'"))
+                    conn.execute(text(ddl))
+                logger.info("Added tickets.%s column", name)
+                break
+            except OperationalError as exc:
+                last_exc = exc
+                if _has_column(engine, "tickets", name):
+                    break  # added concurrently by another instance
+                logger.warning(
+                    "ensure_payment_columns(%s) attempt %d/%d failed (table busy?): %s",
+                    name, attempt, attempts, exc,
+                )
+                if attempt < attempts:
+                    time.sleep(3 * attempt)
+        else:
+            if not _has_column(engine, "tickets", name):
+                raise RuntimeError(
+                    f"Could not add tickets.{name} after retries — table stayed "
+                    "locked. Re-deploy or run the ALTER manually in a quiet window."
+                ) from last_exc
+
+
 # --------------------------- charge calculation -------------------------- #
 
 def compute_charges(ticket: Ticket) -> Dict[str, object]:
