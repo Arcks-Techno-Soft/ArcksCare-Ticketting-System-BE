@@ -120,6 +120,12 @@ def _bootstrap_db() -> None:
     ensure_worknote_attempt_column(engine)
     ensure_installation_note_attempt_column(engine)
     Base.metadata.create_all(bind=engine)
+    # One-time, idempotent: fold pre-attempts work notes into a synthetic
+    # ended attempt so they remain visible under the new attempts UI. Must run
+    # after create_all (needs the attempt tables). No-op once there are no
+    # attempt-less notes left.
+    from .services.attempt_backfill import backfill_legacy_notes_into_attempts
+    backfill_legacy_notes_into_attempts(engine)
     logger.info("Database ready: %s", settings.database_url.split("@")[-1])
 
     with SessionLocal() as db:
