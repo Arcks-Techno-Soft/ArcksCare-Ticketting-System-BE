@@ -15,6 +15,7 @@ from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..models.installation import Installation, InstallationStatus
 from ..models.shipment import TicketShipment, TicketShipmentItem
 from ..models.spare import SpareCatalog, TicketSpare
 from ..models.sub_engineer import SubEngineer, SubEngineerRoster
@@ -234,7 +235,8 @@ def get_ticket_report(
 @router.get("/engineers", response_model=List[EngineerOption])
 def list_engineers(db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
     """Active engineers for the 'assign to' picker, each annotated with their
-    current open-ticket count so the UI can recommend the least-busy ones."""
+    current open workload (open tickets + pending installations) so the UI can
+    recommend the least-busy ones."""
     engineers = (
         db.query(User)
         .filter(User.role == UserRole.ENGINEER.value, User.active.is_(True))
@@ -242,7 +244,7 @@ def list_engineers(db: Session = Depends(get_db), _user: User = Depends(get_curr
         .all()
     )
     # Per-engineer count of active (not CLOSED, not deleted) assigned tickets.
-    counts = dict(
+    ticket_counts = dict(
         db.query(Ticket.assigned_engineer_id, func.count(Ticket.id))
         .filter(
             Ticket.assigned_engineer_id.isnot(None),
@@ -252,10 +254,22 @@ def list_engineers(db: Session = Depends(get_db), _user: User = Depends(get_curr
         .group_by(Ticket.assigned_engineer_id)
         .all()
     )
+    # Per-engineer count of pending (not CLOSED) assigned installations.
+    install_counts = dict(
+        db.query(Installation.assigned_engineer_id, func.count(Installation.id))
+        .filter(
+            Installation.assigned_engineer_id.isnot(None),
+            Installation.status != InstallationStatus.CLOSED.value,
+        )
+        .group_by(Installation.assigned_engineer_id)
+        .all()
+    )
     out: List[EngineerOption] = []
     for u in engineers:
         item = EngineerOption.model_validate(u)
-        item.open_ticket_count = int(counts.get(u.id, 0))
+        item.open_ticket_count = int(ticket_counts.get(u.id, 0)) + int(
+            install_counts.get(u.id, 0)
+        )
         out.append(item)
     return out
 

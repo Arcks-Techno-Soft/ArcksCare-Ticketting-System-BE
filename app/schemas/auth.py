@@ -30,8 +30,9 @@ class EngineerOption(UserOut):
     """An engineer for the 'assign to' picker, annotated with their current
     workload so the UI can surface the least-busy (and recommend free) ones.
 
-    `open_ticket_count` = tickets assigned to this engineer that are not yet
-    CLOSED (and not soft-deleted) — i.e. what's currently on their plate.
+    `open_ticket_count` = open workload assigned to this engineer: active
+    tickets (not CLOSED, not soft-deleted) plus pending installations (not
+    CLOSED) — i.e. what's currently on their plate.
     """
 
     open_ticket_count: int = 0
