@@ -48,8 +48,8 @@ class CreateUserRequest(BaseModel):
     # URLs and logs without escaping.
     username: str = Field(min_length=3, max_length=50, pattern=r"^[a-z0-9._-]+$")
     password: str = Field(min_length=8, max_length=200)
-    # Accepted: "MANAGER" (admin-tier) or "ENGINEER".
-    role: str = Field(pattern=r"^(MANAGER|ENGINEER)$")
+    # Accepted: "MANAGER" (admin-tier), "ENGINEER", or "SALES".
+    role: str = Field(pattern=r"^(MANAGER|ENGINEER|SALES)$")
     # District an Engineer covers — used to match incoming tickets by city.
     # Optional; only meaningful for ENGINEER accounts.
     district: Optional[str] = Field(default=None, max_length=80)

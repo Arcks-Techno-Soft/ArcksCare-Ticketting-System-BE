@@ -49,6 +49,9 @@ class InstallationCreate(InstallationAddressUpdate):
     # Optional initial assignment. If supplied, the installation is created
     # already ASSIGNED to this user (engineer / self-assign).
     assigned_engineer_id: Optional[int] = None
+    # Optional sales rep credited with sourcing this installation. Must be the
+    # id of an active SALES user; validated in the create endpoint.
+    sales_rep_id: Optional[int] = None
 
     @field_validator("phone")
     @classmethod
@@ -80,6 +83,11 @@ class InstallationAssignRequest(BaseModel):
 
 class InstallationInvoiceUpdate(BaseModel):
     invoice_number: str = Field(min_length=1, max_length=80)
+
+
+class InstallationSalesRepUpdate(BaseModel):
+    # Pass null to clear the credited sales rep, or an active SALES user's id.
+    sales_rep_id: Optional[int] = None
 
 
 class InstallationNoteIn(BaseModel):
@@ -221,6 +229,7 @@ class InstallationOut(BaseModel):
     created_by: Optional[UserOut] = None
     assigned_by: Optional[UserOut] = None
     assigned_engineer: Optional[UserOut] = None
+    sales_rep: Optional[UserOut] = None
     assigned_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
@@ -245,6 +254,7 @@ class InstallationListItem(BaseModel):
     state: Optional[str] = None
     created_by: Optional[UserOut] = None
     assigned_engineer: Optional[UserOut] = None
+    sales_rep: Optional[UserOut] = None
     created_at: datetime
 
 

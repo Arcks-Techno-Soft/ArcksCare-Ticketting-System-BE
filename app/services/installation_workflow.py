@@ -70,6 +70,25 @@ def ensure_installation_invoice_document_columns(engine: Engine) -> None:
             conn.execute(text(f"ALTER TABLE {qualify('installations')} ADD COLUMN {name} {ddl}"))
 
 
+def ensure_installation_sales_rep_column(engine: Engine) -> None:
+    """Add installations.sales_rep_id if missing.
+
+    Credits a SALES user with sourcing the installation. Nullable so rows that
+    pre-date the feature stay valid. Same idempotent-ALTER rationale as the
+    other installation columns; works on SQLite (dev) and Postgres (prod).
+    """
+    insp = inspect(engine)
+    if "installations" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # Fresh DB — create_all will include the column.
+    existing = {c["name"] for c in insp.get_columns("installations", schema=MIGRATION_SCHEMA)}
+    if "sales_rep_id" in existing:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text(f"ALTER TABLE {qualify('installations')} ADD COLUMN sales_rep_id INTEGER")
+        )
+
+
 def ensure_installation_products_column(engine: Engine) -> None:
     """Add installations.products_for_installation if it's missing.
 

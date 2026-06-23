@@ -28,6 +28,7 @@ from ..schemas.installation import (
     InstallationNoteIn,
     InstallationNoteOut,
     InstallationOut,
+    InstallationSalesRepUpdate,
 )
 from ..services.auth import get_current_user, require_role
 from ..services.installation_signing import (
@@ -62,13 +63,33 @@ def _make_reference(installation_id: int, year: Optional[int] = None) -> str:
     return f"AI-{year}-{installation_id:05d}"
 
 
-def _load(db: Session, reference: str) -> Installation:
+def _load(db: Session, reference: str, user: Optional[User] = None) -> Installation:
+    """Load an installation by reference, applying role-based visibility.
+
+    A SALES user may only open installations they sourced (they're the
+    `sales_rep`) or opened themselves — this lets them follow the engineer's
+    progress (status, work attempts, notes/photos, timeline) on their own deals
+    while staying blind to everyone else's. We return 404 rather than 403 so a
+    sales rep can't enumerate the reference space. Admin/Manager/Engineer keep
+    their existing access; write endpoints independently enforce role/assignee
+    in the workflow service, so visibility never grants the ability to act.
+
+    `user` is optional for legacy callers; read endpoints should pass the
+    authenticated user so the scope check fires.
+    """
     inst = (
         db.query(Installation)
         .filter(Installation.reference == reference.strip().upper())
         .one_or_none()
     )
     if inst is None:
+        raise HTTPException(status_code=404, detail="Installation not found")
+    if (
+        user is not None
+        and user.role == UserRole.SALES.value
+        and inst.sales_rep_id != user.id
+        and inst.created_by_id != user.id
+    ):
         raise HTTPException(status_code=404, detail="Installation not found")
     return inst
 
@@ -88,6 +109,14 @@ def list_installations(
     q = db.query(Installation)
     if user.role == UserRole.ENGINEER.value:
         q = q.filter(Installation.assigned_engineer_id == user.id)
+    elif user.role == UserRole.SALES.value:
+        # Sales reps see installations they sourced or opened themselves.
+        q = q.filter(
+            or_(
+                Installation.sales_rep_id == user.id,
+                Installation.created_by_id == user.id,
+            )
+        )
     if status:
         q = q.filter(Installation.status == status.upper())
     if created_within_days:
@@ -141,13 +170,25 @@ def create_installation(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Any staff member (Admin / Manager / Engineer) creates a new installation.
-    Engineer-created installations land in the admin dashboard tagged with
-    `created_by`, and stay unassigned for an Admin/Manager to route. Admins and
-    Managers may optionally pre-assign (engineer, or self-assign by own id)."""
-    # Engineers cannot pre-assign — their installations go to the admin queue.
-    if user.role == UserRole.ENGINEER.value:
+    """Any staff member (Admin / Manager / Engineer / Sales) creates a new
+    installation. Engineer- and Sales-created installations land in the admin
+    dashboard tagged with `created_by`, and stay unassigned for an Admin/Manager
+    to route. Admins and Managers may optionally pre-assign (engineer, or
+    self-assign by own id) and credit a sales rep."""
+    # Only Admin/Manager can pre-assign an engineer or credit a sales rep on
+    # creation — engineers' and sales' installations go to the admin queue.
+    if user.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
         body.assigned_engineer_id = None
+        # A SALES user opening their own installation is credited as the rep.
+        body.sales_rep_id = user.id if user.role == UserRole.SALES.value else None
+
+    # Validate the chosen sales rep is an active SALES user before we attach it.
+    sales_rep_id: Optional[int] = None
+    if body.sales_rep_id is not None:
+        rep = db.query(User).filter(User.id == body.sales_rep_id).one_or_none()
+        if rep is None or not rep.active or rep.role != UserRole.SALES.value:
+            raise HTTPException(status_code=400, detail="Invalid sales representative")
+        sales_rep_id = rep.id
 
     inst = Installation(
         reference="PENDING",
@@ -168,6 +209,7 @@ def create_installation(
         longitude=body.longitude,
         status=InstallationStatus.NEW.value,
         created_by_id=user.id,
+        sales_rep_id=sales_rep_id,
     )
     db.add(inst)
     db.flush()
@@ -206,7 +248,7 @@ def get_installation(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    return _load(db, reference)
+    return _load(db, reference, user)
 
 
 @router.get("/{reference}/events", response_model=List[InstallationEventOut])
@@ -215,7 +257,7 @@ def list_events(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    inst = _load(db, reference)
+    inst = _load(db, reference, user)
     return (
         db.query(InstallationEvent)
         .filter(InstallationEvent.installation_id == inst.id)
@@ -262,6 +304,28 @@ def update_invoice_endpoint(
     """Edit the invoice number. Assignee / Admin / Manager, before CLOSED."""
     inst = _load(db, reference)
     return update_invoice(db, inst, user, body.invoice_number)
+
+
+@router.patch("/{reference}/sales-rep", response_model=InstallationOut)
+def update_sales_rep_endpoint(
+    reference: str,
+    body: InstallationSalesRepUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Set, change, or clear the credited sales rep. Admin / Manager only."""
+    _require_owner_or_manager(user)
+    inst = _load(db, reference)
+    if body.sales_rep_id is None:
+        inst.sales_rep_id = None
+    else:
+        rep = db.query(User).filter(User.id == body.sales_rep_id).one_or_none()
+        if rep is None or not rep.active or rep.role != UserRole.SALES.value:
+            raise HTTPException(status_code=400, detail="Invalid sales representative")
+        inst.sales_rep_id = rep.id
+    db.commit()
+    db.refresh(inst)
+    return inst
 
 
 # --------------------------- invoice document --------------------------- #
@@ -316,7 +380,7 @@ def list_notes(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    inst = _load(db, reference)
+    inst = _load(db, reference, user)
     return (
         db.query(InstallationNote)
         .filter(InstallationNote.installation_id == inst.id)

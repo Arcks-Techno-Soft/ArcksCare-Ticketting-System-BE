@@ -97,6 +97,7 @@ def _bootstrap_db() -> None:
         ensure_installation_note_attempt_column,
         ensure_installation_products_column,
         ensure_installation_resolution_photo_columns,
+        ensure_installation_sales_rep_column,
     )
 
     # On a non-public (e.g. "test") schema, create it before anything tries to
@@ -115,6 +116,7 @@ def _bootstrap_db() -> None:
     ensure_ticket_soft_delete_columns(engine)
     ensure_installation_invoice_document_columns(engine)
     ensure_installation_products_column(engine)
+    ensure_installation_sales_rep_column(engine)
     ensure_installation_address_columns(engine)
     ensure_installation_resolution_photo_columns(engine)
     # Work-attempt FK columns on the existing notes tables (the attempt tables

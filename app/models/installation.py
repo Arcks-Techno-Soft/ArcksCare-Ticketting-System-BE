@@ -78,6 +78,9 @@ class Installation(Base):
 
     # Who created it (Admin/Manager)
     created_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    # Sales rep credited with sourcing this installation. Set at create-time by
+    # an Admin/Manager (or self when a SALES user opens it). NULL when none picked.
+    sales_rep_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     # Assignment (engineer, or owner/manager self-assignment)
     assigned_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     assigned_engineer_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
@@ -115,6 +118,9 @@ class Installation(Base):
 
     created_by: Mapped[Optional["User"]] = relationship(
         foreign_keys=[created_by_id], lazy="joined"
+    )
+    sales_rep: Mapped[Optional["User"]] = relationship(
+        foreign_keys=[sales_rep_id], lazy="joined"
     )
     assigned_by: Mapped[Optional["User"]] = relationship(
         foreign_keys=[assigned_by_id], lazy="joined"
