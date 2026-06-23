@@ -18,6 +18,8 @@ class UserRole(str, Enum):
     ADMIN = "ADMIN"          # full access, can edit warranty, close tickets, manage team
     MANAGER = "MANAGER"      # can acknowledge + assign + download PDFs
     ENGINEER = "ENGINEER"    # can accept, add work notes, mark resolved (on own tickets)
+    SALES = "SALES"          # field sales rep — raises tickets/installations; gets
+                             # credited as the sales rep on installations they source.
     # Legacy alias: pre-rename accounts still carry role "OWNER". It is treated
     # as ADMIN everywhere (see require_role + ADMIN_ROLE_VALUES) until those rows
     # are migrated to ADMIN. TODO: remove once no OWNER rows remain.

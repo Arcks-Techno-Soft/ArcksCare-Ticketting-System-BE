@@ -276,6 +276,18 @@ def list_engineers(db: Session = Depends(get_db), _user: User = Depends(get_curr
     return out
 
 
+@router.get("/sales-reps", response_model=List[UserOut])
+def list_sales_reps(db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
+    """Active SALES users — feeds the 'sales representative' picker on the new
+    installation form. Any signed-in staff member can read it."""
+    return (
+        db.query(User)
+        .filter(User.role == UserRole.SALES.value, User.active.is_(True))
+        .order_by(User.name)
+        .all()
+    )
+
+
 # --------------------------- ticket list + detail ----------------------- #
 
 @router.get("/tickets", response_model=TicketListPage)
@@ -300,6 +312,9 @@ def list_tickets(
         q = q.filter(
             or_(Ticket.assigned_engineer_id == user.id, Ticket.id.in_(additional))
         )
+    elif user.role == UserRole.SALES.value:
+        # Sales reps only see tickets they raised themselves.
+        q = q.filter(Ticket.raised_by_id == user.id)
     if status:
         q = q.filter(Ticket.status == status.upper())
     if severity:
@@ -394,6 +409,8 @@ def ticket_status_counts(
         q = q.filter(
             or_(Ticket.assigned_engineer_id == user.id, Ticket.id.in_(additional))
         )
+    elif user.role == UserRole.SALES.value:
+        q = q.filter(Ticket.raised_by_id == user.id)
     if severity:
         q = q.filter(Ticket.severity == severity.upper())
     if product:
@@ -1599,6 +1616,13 @@ def _load_ticket(
         and t.raised_by_id != user.id
         # …or they were added as an additional engineer for the same visit.
         and not any(ae.engineer_id == user.id for ae in t.additional_engineers)
+    ):
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    # Sales reps can only open tickets they raised themselves.
+    if (
+        user is not None
+        and user.role == UserRole.SALES.value
+        and t.raised_by_id != user.id
     ):
         raise HTTPException(status_code=404, detail="Ticket not found")
     return t
