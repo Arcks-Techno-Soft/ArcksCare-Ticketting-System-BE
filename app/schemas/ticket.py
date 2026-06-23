@@ -194,6 +194,12 @@ class TicketResponse(BaseModel):
     payment_amount_inr: Optional[int] = None
     payment_collected_at: Optional[datetime] = None
     payment_collected_by: Optional[UserOut] = None
+    # Money breakdown for partial-payment tracking: total billable, collected so
+    # far, and what's still outstanding. The ticket can only CLOSE when pending
+    # reaches ₹0 (i.e. paid in full).
+    amount_due_inr: int = 0
+    amount_collected_inr: int = 0
+    amount_pending_inr: int = 0
 
     # Who raised the ticket. NULL = customer self-submitted via the public web
     # form; set = staff member (typically an Engineer) who submitted on the
