@@ -235,10 +235,11 @@ def ensure_payment_columns(engine: Engine) -> None:
 def compute_charges(ticket: Ticket) -> Dict[str, object]:
     """Return the billing summary for a ticket.
 
-    Warranty rule: when the ticket is covered (under warranty or AMC), BOTH the
-    spare line items and the service fee bill at zero. The stored values are
-    still surfaced (so the customer sees the goodwill amount) but
-    `*_billable_inr` and `grand_total_inr` reflect what they actually owe.
+    Warranty rule: when the ticket is covered (under warranty or AMC), the
+    SPARE line items bill at zero (parts are covered). The SERVICE FEE, however,
+    is always billable — a covered ticket can still carry a chargeable visit/
+    service fee (it just defaults to ₹0 and the engineer sets it). So a covered
+    ticket with a non-zero service fee genuinely owes that amount.
 
     Remote-support rule: spare parts don't apply to remote tickets, so they
     never bill — only the service fee carries through. (Guards block adding
@@ -269,7 +270,9 @@ def compute_charges(ticket: Ticket) -> Dict[str, object]:
         )
     spares_billable_total = spares_list_price_total if spares_billable else 0
     service_fee = int(ticket.service_fee_inr or 0)
-    service_fee_billable = 0 if is_warranty else service_fee
+    # Service fee is always billable — even under warranty/AMC a visit fee may
+    # be charged. It defaults to ₹0, so covered tickets owe nothing unless set.
+    service_fee_billable = service_fee
     return {
         "warranty_status": ticket.warranty_status,
         "is_warranty": is_warranty,

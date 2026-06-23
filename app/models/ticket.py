@@ -216,33 +216,58 @@ class Ticket(Base):
     # --- payment gating (single source of truth; surfaced in the API too) ---
 
     @property
+    def amount_due_inr(self) -> int:
+        """Total billable amount owed on this ticket (the full payable total).
+
+        Mirrors services.spares.compute_charges: the service fee is always
+        billable; spare parts bill only when the ticket is NOT covered (under
+        warranty / AMC) and NOT remote support. Defaults to ₹0, so a covered
+        ticket with no service fee owes nothing.
+        """
+        is_warranty = self.warranty_status in (
+            WarrantyStatus.UNDER_WARRANTY.value,
+            WarrantyStatus.AMC.value,
+        )
+        is_remote = self.service_type == ServiceType.REMOTE_SUPPORT.value
+        spares_billable = not is_warranty and not is_remote
+        spares_total = (
+            sum(int(s.unit_price_inr) * int(s.quantity) for s in self.spares)
+            if spares_billable
+            else 0
+        )
+        return spares_total + int(self.service_fee_inr or 0)
+
+    @property
+    def amount_collected_inr(self) -> int:
+        """Total collected so far across one or more (partial) payments."""
+        return int(self.payment_amount_inr or 0)
+
+    @property
+    def amount_pending_inr(self) -> int:
+        """Outstanding balance: total due minus collected (never negative)."""
+        return max(0, self.amount_due_inr - self.amount_collected_inr)
+
+    @property
     def has_recorded_charges(self) -> bool:
         """Engineer recorded something billable: a non-zero service fee or any
-        spare. (Under warranty the billable total is always ₹0, so we read the
-        raw recorded amounts.)"""
-        return (self.service_fee_inr or 0) > 0 or len(self.spares) > 0
+        billable spare."""
+        return self.amount_due_inr > 0
 
     @property
     def payment_required(self) -> bool:
-        """Whether this ticket must record payment before it can CLOSE. Legacy
-        tickets (payment_status NULL) are exempt. Out-of-warranty always needs
-        it; covered tickets (under warranty / AMC) need it only once charges are
-        added. UNKNOWN warranty is never gated."""
+        """Whether this ticket must collect payment before it can CLOSE. Legacy
+        tickets (payment_status NULL) are exempt. Otherwise payment is required
+        whenever there's a billable amount — out-of-warranty (which carries a
+        service fee) and covered tickets that have a service fee or spares."""
         if self.payment_status is None:
             return False
-        if self.warranty_status == WarrantyStatus.OUT_OF_WARRANTY.value:
-            return True
-        if self.warranty_status in (
-            WarrantyStatus.UNDER_WARRANTY.value,
-            WarrantyStatus.AMC.value,
-        ):
-            return self.has_recorded_charges
-        return False
+        return self.amount_due_inr > 0
 
     @property
     def payment_blocks_close(self) -> bool:
-        """Payment required but not yet COLLECTED — the ticket can't close."""
-        return self.payment_required and self.payment_status != PaymentStatus.COLLECTED.value
+        """Payment required but the full amount hasn't been collected yet — the
+        ticket can't close. Partial payments keep it blocked until paid in full."""
+        return self.payment_required and self.amount_pending_inr > 0
 
 
 class TicketEvent(Base):

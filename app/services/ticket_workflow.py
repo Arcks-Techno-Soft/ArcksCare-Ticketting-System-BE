@@ -387,45 +387,69 @@ def collect_payment(db: Session, ticket: Ticket, actor: User, amount_inr: int) -
             detail="No payment is due on this ticket.",
         )
     if ticket.payment_status == PaymentStatus.COLLECTED.value:
-        raise HTTPException(status_code=409, detail="Payment is already recorded.")
-    # Out-of-warranty must collect a positive amount; covered tickets (under
-    # warranty / AMC) may record ₹0 (e.g. goodwill — nothing actually charged).
-    if amount_inr < 0:
-        raise HTTPException(status_code=400, detail="Amount can't be negative.")
-    if ticket.warranty_status == WarrantyStatus.OUT_OF_WARRANTY.value and amount_inr <= 0:
+        raise HTTPException(status_code=409, detail="Payment is already recorded in full.")
+
+    # Each collection must be positive — ₹0 can't be collected. This covers the
+    # out-of-warranty "must be > 0" rule and applies to partial payments too.
+    if amount_inr <= 0:
         raise HTTPException(
             status_code=400,
             detail="Enter an amount greater than zero — ₹0 can't be collected.",
         )
+    # Never accept more than what's still owed.
+    pending = ticket.amount_pending_inr
+    if amount_inr > pending:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Amount exceeds the ₹{pending} still pending — collect ₹{pending} or less.",
+        )
 
-    ticket.payment_status = PaymentStatus.COLLECTED.value
-    ticket.payment_amount_inr = int(amount_inr)
+    # Accumulate across partial payments. Mark COLLECTED only once the full
+    # balance is cleared; otherwise the ticket stays PENDING with a balance and
+    # does NOT close.
+    ticket.payment_amount_inr = ticket.amount_collected_inr + int(amount_inr)
     ticket.payment_collected_at = datetime.now(timezone.utc)
     ticket.payment_collected_by_id = actor.id
+    fully_paid = ticket.amount_pending_inr == 0
+    if fully_paid:
+        ticket.payment_status = PaymentStatus.COLLECTED.value
     _log_event(
         db, ticket=ticket, actor=actor, event_type="PAYMENT_COLLECTED",
-        payload={"amount_inr": int(amount_inr)},
+        payload={
+            "amount_inr": int(amount_inr),
+            "collected_total_inr": ticket.amount_collected_inr,
+            "due_inr": ticket.amount_due_inr,
+            "pending_inr": ticket.amount_pending_inr,
+            "partial": not fully_paid,
+        },
     )
 
-    # Close now if the resolution is otherwise complete (signatures + PDF done).
-    res = ticket.resolution
-    if (
-        ticket.status == TicketStatus.RESOLVED.value
-        and res is not None
-        and res.customer_signed_at is not None
-        and res.engineer_signed_at is not None
-        and res.pdf_generated_at is not None
-    ):
-        prev = ticket.status
-        ticket.status = TicketStatus.CLOSED.value
-        _log_event(
-            db, ticket=ticket, actor=actor, event_type="CLOSED",
-            from_status=prev, to_status=ticket.status,
+    # Close only when paid IN FULL and the work is otherwise complete:
+    #   - remote support: no signatures/PDF, so RESOLVED is enough;
+    #   - site visit: both signatures + PDF must be in place.
+    if fully_paid and ticket.status == TicketStatus.RESOLVED.value:
+        is_remote = ticket.service_type == ServiceType.REMOTE_SUPPORT.value
+        res = ticket.resolution
+        ready = is_remote or (
+            res is not None
+            and res.customer_signed_at is not None
+            and res.engineer_signed_at is not None
+            and res.pdf_generated_at is not None
         )
+        if ready:
+            prev = ticket.status
+            ticket.status = TicketStatus.CLOSED.value
+            _log_event(
+                db, ticket=ticket, actor=actor, event_type="CLOSED",
+                from_status=prev, to_status=ticket.status,
+            )
     db.commit()
     db.refresh(ticket)
-    logger.info("Payment ₹%s recorded for %s by %s (status=%s)",
-                amount_inr, ticket.reference, actor.username, ticket.status)
+    logger.info(
+        "Payment ₹%s recorded for %s by %s (collected %s/%s, status=%s)",
+        amount_inr, ticket.reference, actor.username,
+        ticket.amount_collected_inr, ticket.amount_due_inr, ticket.status,
+    )
     return ticket
 
 
@@ -698,7 +722,24 @@ def resolve(db: Session, ticket: Ticket, actor: User, summary: str) -> tuple[Tic
         mins = round((ticket.resolved_at - start).total_seconds() / 60.0, 1)
 
     if is_remote:
-        # No signatures / PDF — resolve and close in one step.
+        # No signatures / PDF for remote support. It still can't close while
+        # payment is owed — gate it the same as a site visit. With a balance
+        # due, hold the ticket in RESOLVED ("payment pending"); collect_payment
+        # closes it once paid in full. With nothing due, close in one step.
+        if payment_blocks_close(ticket):
+            ticket.status = TicketStatus.RESOLVED.value
+            _log_event(
+                db, ticket=ticket, actor=actor, event_type="RESOLVED",
+                from_status=prev, to_status=ticket.status,
+                payload={"minutes_taken": mins, "service_type": ticket.service_type},
+                note="Remote support — resolved; awaiting payment before close.",
+            )
+            db.commit()
+            db.refresh(ticket)
+            logger.info("Ticket %s resolved (remote) by %s — held pending payment",
+                        ticket.reference, actor.username)
+            return ticket, None
+
         ticket.status = TicketStatus.CLOSED.value
         _log_event(
             db, ticket=ticket, actor=actor, event_type="RESOLVED",
@@ -752,6 +793,25 @@ def update_severity(db: Session, ticket: Ticket, actor: User, new_severity: str)
     return ticket
 
 
+# Flat default service fee applied to remote out-of-warranty tickets (there's
+# no on-site assessment, so a standard remote charge applies). Editable by the
+# engineer afterwards. Site visits stay ₹0 by default (engineer sets on-site),
+# and covered (under-warranty / AMC) tickets stay ₹0 by default.
+REMOTE_OOW_DEFAULT_FEE_INR = 800
+
+
+def _maybe_default_remote_oow_fee(ticket: Ticket) -> None:
+    """Seed the ₹800 default service fee when a ticket becomes remote +
+    out-of-warranty and no fee has been set yet. Never overrides an existing
+    (engineer-entered) fee."""
+    if (
+        ticket.service_type == ServiceType.REMOTE_SUPPORT.value
+        and ticket.warranty_status == WarrantyStatus.OUT_OF_WARRANTY.value
+        and int(ticket.service_fee_inr or 0) == 0
+    ):
+        ticket.service_fee_inr = REMOTE_OOW_DEFAULT_FEE_INR
+
+
 def update_warranty(db: Session, ticket: Ticket, actor: User, new_status: str) -> Ticket:
     """Admin or Manager can update warranty at any status."""
     if actor.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
@@ -767,6 +827,8 @@ def update_warranty(db: Session, ticket: Ticket, actor: User, new_status: str) -
         db, ticket=ticket, actor=actor, event_type="WARRANTY_UPDATED",
         payload={"from": prev, "to": new_status},
     )
+    # Seed the remote out-of-warranty default fee if applicable.
+    _maybe_default_remote_oow_fee(ticket)
     db.commit()
     db.refresh(ticket)
     logger.info("Ticket %s warranty %s → %s by %s", ticket.reference, prev, new_status, actor.username)
@@ -802,6 +864,8 @@ def set_service_type(db: Session, ticket: Ticket, actor: User, new_type: str) ->
         db, ticket=ticket, actor=actor, event_type="SERVICE_TYPE_UPDATED",
         payload={"from": prev, "to": new_type},
     )
+    # Switching to remote on an out-of-warranty ticket seeds the default fee.
+    _maybe_default_remote_oow_fee(ticket)
     db.commit()
     db.refresh(ticket)
     logger.info("Ticket %s service type %s → %s by %s", ticket.reference, prev, new_type, actor.username)
