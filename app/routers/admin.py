@@ -51,6 +51,7 @@ from ..schemas.auth import (
     UpdateTicketSpareRequest,
     UnregisterPushTokenRequest,
     UpdateUserActiveRequest,
+    UpdateUserSalesRepRequest,
     UpdateWarrantyRequest,
     UserOut,
     WorkNoteOut,
@@ -179,6 +180,9 @@ def create_user(
         role=body.role,
         # District only applies to field engineers.
         district=body.district if body.role == UserRole.ENGINEER.value else None,
+        # SALES-role users are implicitly sales reps; the flag lets any other
+        # role (e.g. MANAGER) also be credited on installations.
+        is_sales_rep=bool(body.is_sales_rep) or body.role == UserRole.SALES.value,
         active=True,
     )
     db.add(user)
@@ -202,6 +206,24 @@ def set_user_active(
     if target.id == actor.id and not body.active:
         raise HTTPException(status_code=400, detail="You cannot deactivate your own account.")
     target.active = body.active
+    db.commit()
+    db.refresh(target)
+    return target
+
+
+@router.patch("/users/{user_id}/sales-rep", response_model=UserOut)
+def set_user_sales_rep(
+    user_id: int,
+    body: UpdateUserSalesRepRequest,
+    db: Session = Depends(get_db),
+    _actor: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Flag/unflag a user as a sales rep (creditable on installations),
+    independent of their role. Admin only."""
+    target = db.query(User).filter(User.id == user_id).one_or_none()
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    target.is_sales_rep = bool(body.is_sales_rep)
     db.commit()
     db.refresh(target)
     return target
@@ -278,11 +300,15 @@ def list_engineers(db: Session = Depends(get_db), _user: User = Depends(get_curr
 
 @router.get("/sales-reps", response_model=List[UserOut])
 def list_sales_reps(db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
-    """Active SALES users — feeds the 'sales representative' picker on the new
-    installation form. Any signed-in staff member can read it."""
+    """Users creditable as a sales rep — SALES-role users plus anyone flagged
+    `is_sales_rep` (e.g. a Manager who also does sales). Feeds the 'sales
+    representative' picker. Any signed-in staff member can read it."""
     return (
         db.query(User)
-        .filter(User.role == UserRole.SALES.value, User.active.is_(True))
+        .filter(
+            User.active.is_(True),
+            or_(User.role == UserRole.SALES.value, User.is_sales_rep.is_(True)),
+        )
         .order_by(User.name)
         .all()
     )

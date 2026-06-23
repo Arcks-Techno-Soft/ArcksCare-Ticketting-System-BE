@@ -24,6 +24,9 @@ class UserOut(BaseModel):
     email: Optional[str] = None
     # District an Engineer covers (NULL for Admin/Manager).
     district: Optional[str] = None
+    # When True, this user can be credited as a sales rep on installations,
+    # regardless of role. SALES-role users are eligible without this flag.
+    is_sales_rep: bool = False
 
 
 class EngineerOption(UserOut):
@@ -53,6 +56,9 @@ class CreateUserRequest(BaseModel):
     # District an Engineer covers — used to match incoming tickets by city.
     # Optional; only meaningful for ENGINEER accounts.
     district: Optional[str] = Field(default=None, max_length=80)
+    # Optionally flag this user as also a sales rep (creditable on installations),
+    # independent of role. Defaults off.
+    is_sales_rep: bool = False
 
     @field_validator("district", mode="before")
     @classmethod
@@ -68,6 +74,10 @@ class CreateUserResponse(BaseModel):
 
 class UpdateUserActiveRequest(BaseModel):
     active: bool
+
+
+class UpdateUserSalesRepRequest(BaseModel):
+    is_sales_rep: bool
 
 
 class RegisterPushTokenRequest(BaseModel):

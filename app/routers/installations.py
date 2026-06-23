@@ -53,6 +53,12 @@ logger = logging.getLogger("skposcare.installations")
 router = APIRouter(prefix="/api/v1/admin/installations", tags=["installations"])
 
 
+def _is_sales_eligible(user: User) -> bool:
+    """A user can be credited as a sales rep if their role is SALES or they've
+    been flagged `is_sales_rep` (e.g. a Manager who also does sales)."""
+    return user.role == UserRole.SALES.value or bool(getattr(user, "is_sales_rep", False))
+
+
 def _require_owner_or_manager(user: User) -> None:
     if user.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
         raise HTTPException(status_code=403, detail="Only Admin or Manager can do this")
@@ -186,7 +192,7 @@ def create_installation(
     sales_rep_id: Optional[int] = None
     if body.sales_rep_id is not None:
         rep = db.query(User).filter(User.id == body.sales_rep_id).one_or_none()
-        if rep is None or not rep.active or rep.role != UserRole.SALES.value:
+        if rep is None or not rep.active or not _is_sales_eligible(rep):
             raise HTTPException(status_code=400, detail="Invalid sales representative")
         sales_rep_id = rep.id
 
@@ -320,7 +326,7 @@ def update_sales_rep_endpoint(
         inst.sales_rep_id = None
     else:
         rep = db.query(User).filter(User.id == body.sales_rep_id).one_or_none()
-        if rep is None or not rep.active or rep.role != UserRole.SALES.value:
+        if rep is None or not rep.active or not _is_sales_eligible(rep):
             raise HTTPException(status_code=400, detail="Invalid sales representative")
         inst.sales_rep_id = rep.id
     db.commit()

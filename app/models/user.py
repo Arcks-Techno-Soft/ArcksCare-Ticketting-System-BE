@@ -44,6 +44,11 @@ class User(Base):
     # District an Engineer covers. Used to surface district-matched engineers
     # first in the ticket assignment dropdown. NULL for Admin/Manager.
     district: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)
+    # Capability flag, independent of `role`: when True the user can be credited
+    # as the sales representative on an installation (appears in the sales-rep
+    # picker) regardless of their role. Lets e.g. a Manager also act as a sales
+    # rep without giving up Manager access. SALES-role users are always eligible.
+    is_sales_rep: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     email: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
