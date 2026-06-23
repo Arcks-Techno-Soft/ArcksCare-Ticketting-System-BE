@@ -170,6 +170,9 @@ def ensure_user_profile_columns(engine: Engine) -> None:
         ("last_name", "VARCHAR(60)"),
         ("phone", "VARCHAR(20)"),
         ("district", "VARCHAR(80)"),
+        # Sales-rep capability flag (independent of role). DEFAULT FALSE so
+        # existing rows backfill cleanly on both Postgres and SQLite.
+        ("is_sales_rep", "BOOLEAN DEFAULT FALSE"),
     ]
     with engine.begin() as conn:
         for name, sql_type in pending:
