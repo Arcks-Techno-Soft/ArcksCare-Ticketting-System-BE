@@ -28,6 +28,19 @@ class BusinessType(str, Enum):
     OTHER = "Other"
 
 
+class ContactPersonProfile(str, Enum):
+    """Suggested roles for the contact person shown in the dropdown. Kept in
+    sync with the frontend CONTACT_PERSON_PROFILES list. NOTE:
+    `contact_person_profile` on TicketCreate is a free string (not enum-validated)
+    so that a contact who picks "Other" can type their own role."""
+    OWNER = "Owner"
+    MANAGER = "Manager"
+    CASHIER = "Cashier"
+    CHEF = "Chef"
+    CAPTAIN_WAITER = "Captain/Waiter"
+    OTHER = "Other"
+
+
 class ProductCategory(str, Enum):
     POS = "POS Machine"
     PRINTER = "Printer"
@@ -66,6 +79,11 @@ class TicketCreate(BaseModel):
     # but a customer who picks "Other" types their own category, which is stored
     # here verbatim.
     business_type: str = Field(min_length=2, max_length=60)
+    # The contact person's role. Free text (not enum-validated): the form offers
+    # ContactPersonProfile as suggestions, but a contact who picks "Other" types
+    # their own role, stored here verbatim. Optional at the API layer so other
+    # clients keep working; the public web form requires it.
+    contact_person_profile: Optional[str] = Field(default=None, max_length=60)
 
     # Address
     address_line1: str = Field(min_length=3, max_length=200)
@@ -123,10 +141,10 @@ class TicketCreate(BaseModel):
             raise ValueError("Enter a valid pincode")
         return cleaned
 
-    @field_validator("address_line2", "address_line3", mode="before")
+    @field_validator("address_line2", "address_line3", "contact_person_profile", mode="before")
     @classmethod
     def _empty_string_to_none(cls, v):
-        # Treat blank strings as None for optional address lines.
+        # Treat blank strings as None for optional fields.
         if isinstance(v, str) and not v.strip():
             return None
         return v
@@ -166,6 +184,7 @@ class TicketResponse(BaseModel):
     reference: str
     business_name: str
     contact_name: str
+    contact_person_profile: Optional[str] = None
     email: Optional[EmailStr] = None
     phone: str
     address_line1: str
@@ -275,6 +294,10 @@ class TicketListItem(BaseModel):
     id: int
     reference: str
     business_name: str
+    # Customer contact + their role — used to tag customer-raised tickets in the
+    # admin inbox ("Raised by customer — <name> — <profile>").
+    contact_name: str
+    contact_person_profile: Optional[str] = None
     city: str
     state: str
     product_category: str
