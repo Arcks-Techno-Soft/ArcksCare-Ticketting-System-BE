@@ -257,13 +257,26 @@ def get_ticket_report(
 # --------------------------- lookups ------------------------------------ #
 
 @router.get("/engineers", response_model=List[EngineerOption])
-def list_engineers(db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
+def list_engineers(
+    include_sales_reps: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
     """Active engineers for the 'assign to' picker, each annotated with their
     current open workload (open tickets + pending installations) so the UI can
-    recommend the least-busy ones."""
+    recommend the least-busy ones.
+
+    When `include_sales_reps` is set, active SALES-role users are returned too
+    (each carrying role="SALES") so Admin/Manager can assign service calls and
+    installations to a sales rep as well as an engineer. Workload counts are
+    keyed on `assigned_engineer_id`, so a sales rep's count reflects work
+    assigned to them just like an engineer's."""
+    roles = [UserRole.ENGINEER.value]
+    if include_sales_reps:
+        roles.append(UserRole.SALES.value)
     engineers = (
         db.query(User)
-        .filter(User.role == UserRole.ENGINEER.value, User.active.is_(True))
+        .filter(User.role.in_(roles), User.active.is_(True))
         .order_by(User.name)
         .all()
     )
@@ -371,8 +384,11 @@ def list_tickets(
             or_(Ticket.assigned_engineer_id == user.id, Ticket.id.in_(additional))
         )
     elif user.role == UserRole.SALES.value:
-        # Sales reps only see tickets they raised themselves.
-        q = q.filter(Ticket.raised_by_id == user.id)
+        # Sales reps see tickets they raised OR that are assigned to them (a
+        # service call can now be assigned to a sales rep).
+        q = q.filter(
+            or_(Ticket.raised_by_id == user.id, Ticket.assigned_engineer_id == user.id)
+        )
     if status:
         q = q.filter(Ticket.status == status.upper())
     if severity:
@@ -487,7 +503,9 @@ def ticket_status_counts(
             or_(Ticket.assigned_engineer_id == user.id, Ticket.id.in_(additional))
         )
     elif user.role == UserRole.SALES.value:
-        q = q.filter(Ticket.raised_by_id == user.id)
+        q = q.filter(
+            or_(Ticket.raised_by_id == user.id, Ticket.assigned_engineer_id == user.id)
+        )
     if severity:
         q = q.filter(Ticket.severity == severity.upper())
     if product:
@@ -1699,11 +1717,13 @@ def _load_ticket(
         and not any(ae.engineer_id == user.id for ae in t.additional_engineers)
     ):
         raise HTTPException(status_code=404, detail="Ticket not found")
-    # Sales reps can only open tickets they raised themselves.
+    # Sales reps can open tickets they raised themselves or that are assigned to
+    # them (a service call can now be assigned to a sales rep).
     if (
         user is not None
         and user.role == UserRole.SALES.value
         and t.raised_by_id != user.id
+        and t.assigned_engineer_id != user.id
     ):
         raise HTTPException(status_code=404, detail="Ticket not found")
     return t

@@ -95,6 +95,7 @@ def _load(db: Session, reference: str, user: Optional[User] = None) -> Installat
         and user.role == UserRole.SALES.value
         and inst.sales_rep_id != user.id
         and inst.created_by_id != user.id
+        and inst.assigned_engineer_id != user.id  # …or it's assigned to them
     ):
         raise HTTPException(status_code=404, detail="Installation not found")
     return inst
@@ -116,11 +117,13 @@ def list_installations(
     if user.role == UserRole.ENGINEER.value:
         q = q.filter(Installation.assigned_engineer_id == user.id)
     elif user.role == UserRole.SALES.value:
-        # Sales reps see installations they sourced or opened themselves.
+        # Sales reps see installations they sourced, opened themselves, or that
+        # are assigned to them (an installation can now be assigned to a sales rep).
         q = q.filter(
             or_(
                 Installation.sales_rep_id == user.id,
                 Installation.created_by_id == user.id,
+                Installation.assigned_engineer_id == user.id,
             )
         )
     if status:
