@@ -41,7 +41,15 @@ class Warranty(Base):
         String(120), unique=True, index=True
     )
 
-    # Warranty window.
+    # Invoice number from the sale (mandatory at the API/form layer). Nullable on
+    # the column so pre-existing rows registered before this field was added stay
+    # valid; new registrations always carry one. Indexed for lookup/search.
+    invoice_number: Mapped[Optional[str]] = mapped_column(
+        String(120), nullable=True, index=True
+    )
+
+    # Warranty window. `sale_date` is the invoice date (surfaced in the UI as
+    # "Invoice Date"); the column name is kept to avoid a rename migration.
     sale_date: Mapped[date] = mapped_column(Date, index=True)
     warranty_months: Mapped[int] = mapped_column(Integer)
     # Derived at write time: sale_date + warranty_months. Indexed so an

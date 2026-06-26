@@ -15,16 +15,38 @@ from datetime import date
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import or_
+from sqlalchemy import inspect, or_, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from ..database import get_db
+from ..database import MIGRATION_SCHEMA, get_db, qualify
 from ..models.user import User, UserRole
 from ..models.warranty import Warranty
 from ..schemas.warranty import WarrantyCreate, WarrantyLookupOut, WarrantyOut
 from ..services.auth import get_current_user, require_role
 
 logger = logging.getLogger("skposcare")
+
+
+def ensure_warranty_invoice_number_column(engine: Engine) -> None:
+    """Add warranties.invoice_number if it's missing.
+
+    `create_all` adds new tables but never new columns on existing tables, so
+    this idempotent ALTER backfills the column for databases whose `warranties`
+    table pre-dates the invoice-number field. Added nullable so existing rows
+    stay valid (new registrations always carry one via the API). Scoped to
+    DB_SCHEMA so a test backend can never alter the public/production table.
+    """
+    insp = inspect(engine)
+    if "warranties" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # Fresh DB — create_all will include the column.
+    existing = {c["name"] for c in insp.get_columns("warranties", schema=MIGRATION_SCHEMA)}
+    if "invoice_number" in existing:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text(f"ALTER TABLE {qualify('warranties')} ADD COLUMN invoice_number VARCHAR(120)")
+        )
 
 router = APIRouter(prefix="/api/v1/admin/warranties", tags=["warranties"])
 
@@ -48,7 +70,7 @@ def list_warranties(
     _user: User = Depends(get_current_user),
 ):
     """Most-recently registered warranties first. Optional `q` matches on serial
-    number or product name (case-insensitive)."""
+    number, product name, or invoice number (case-insensitive)."""
     query = db.query(Warranty)
     if q and q.strip():
         like = f"%{q.strip()}%"
@@ -56,6 +78,7 @@ def list_warranties(
             or_(
                 Warranty.serial_number.ilike(like),
                 Warranty.product_name.ilike(like),
+                Warranty.invoice_number.ilike(like),
             )
         )
     return query.order_by(Warranty.created_at.desc()).limit(limit).all()
@@ -113,6 +136,7 @@ def create_warranty(
         product_name=body.product_name.strip(),
         serial_number=body.serial_number.strip(),
         serial_number_norm=norm,
+        invoice_number=body.invoice_number.strip(),
         sale_date=body.sale_date,
         warranty_months=body.warranty_months,
         expiry_date=expiry,
