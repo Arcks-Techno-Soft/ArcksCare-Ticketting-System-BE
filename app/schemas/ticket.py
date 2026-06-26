@@ -24,6 +24,8 @@ class BusinessType(str, Enum):
     CLOUD_KITCHEN = "Cloud Kitchen"
     FOOD_COURT = "Food Court"
     ICE_CREAM_PARLOUR = "Ice Cream Parlour"
+    PUB_AND_BAR = "Pub and Bar"
+    BREWERY = "Brewery"
     PARTNER = "Partner"
     OTHER = "Other"
 
