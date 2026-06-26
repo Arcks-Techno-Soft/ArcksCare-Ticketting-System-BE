@@ -23,3 +23,4 @@ from .ticket import (  # noqa: F401
     WorkNoteAttachment,
 )
 from .user import User, UserRole  # noqa: F401
+from .warranty import Warranty  # noqa: F401

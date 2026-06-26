@@ -19,6 +19,7 @@ from .routers import auth as auth_router
 from .routers import installations as installations_router
 from .routers import sign as sign_router
 from .routers import tickets as tickets_router
+from .routers import warranties as warranties_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("skposcare")
@@ -48,6 +49,7 @@ app.include_router(tickets_router.router)
 app.include_router(auth_router.router)
 app.include_router(admin_router.router)
 app.include_router(installations_router.router)
+app.include_router(warranties_router.router)
 app.include_router(sign_router.router)
 
 # Serve uploaded files at /uploads/<ticket_ref>/<filename>.
@@ -69,6 +71,7 @@ def _bootstrap_db() -> None:
     from .models import user as _u  # noqa: F401
     from .models import spare as _s  # noqa: F401
     from .models import installation as _i  # noqa: F401
+    from .models import warranty as _w  # noqa: F401
     from .models import sub_engineer as _se  # noqa: F401
     from .models import ticket_engineer as _te  # noqa: F401
     from .services.auth import ensure_user_profile_columns, seed_initial_users
