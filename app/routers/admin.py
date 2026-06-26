@@ -298,6 +298,28 @@ def list_engineers(db: Session = Depends(get_db), _user: User = Depends(get_curr
     return out
 
 
+@router.get("/businesses", response_model=List[str])
+def list_businesses(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Distinct business names for the inbox "sort by business" picker.
+
+    Scoped to the tickets the caller can see (engineers → their own; sales →
+    what they raised) so the dropdown never reveals businesses they can't open.
+    Soft-deleted tickets are excluded.
+    """
+    q = db.query(Ticket.business_name).filter(Ticket.deleted_at.is_(None))
+    if user.role == UserRole.ENGINEER.value:
+        additional = db.query(TicketEngineer.ticket_id).filter(
+            TicketEngineer.engineer_id == user.id
+        )
+        q = q.filter(
+            or_(Ticket.assigned_engineer_id == user.id, Ticket.id.in_(additional))
+        )
+    elif user.role == UserRole.SALES.value:
+        q = q.filter(Ticket.raised_by_id == user.id)
+    rows = q.distinct().order_by(Ticket.business_name).all()
+    return [r[0] for r in rows if r[0]]
+
+
 @router.get("/sales-reps", response_model=List[UserOut])
 def list_sales_reps(db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
     """Users creditable as a sales rep — SALES-role users plus anyone flagged
@@ -323,6 +345,16 @@ def list_tickets(
     product: Optional[str] = Query(default=None),
     search: Optional[str] = Query(default=None),
     created_within_days: Optional[int] = Query(default=None, ge=1, le=3650),
+    # Inbox "Sort by" control. None = legacy default (status grouping) so other
+    # clients are unaffected; the web inbox always sends one of these.
+    sort: Optional[str] = Query(
+        default=None,
+        pattern="^(newest|oldest|severity|status|unassigned)$",
+    ),
+    # Narrow the inbox to one engineer's tickets (the "Engineer" sort view).
+    assigned_engineer_id: Optional[int] = Query(default=None, ge=1),
+    # Narrow the inbox to one business (the "Business" sort view). Exact match.
+    business_name: Optional[str] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -347,6 +379,10 @@ def list_tickets(
         q = q.filter(Ticket.severity == severity.upper())
     if product:
         q = q.filter(Ticket.product_category == product)
+    if assigned_engineer_id:
+        q = q.filter(Ticket.assigned_engineer_id == assigned_engineer_id)
+    if business_name:
+        q = q.filter(Ticket.business_name == business_name)
     if created_within_days:
         cutoff = datetime.now(timezone.utc) - timedelta(days=created_within_days)
         q = q.filter(Ticket.created_at >= cutoff)
@@ -391,12 +427,25 @@ def list_tickets(
         value=Ticket.severity,
         else_=99,
     )
-    rows = (
-        q.order_by(
+    # Unassigned-first: tickets with no engineer float to the top.
+    unassigned_rank = case((Ticket.assigned_engineer_id.is_(None), 0), else_=1)
+    # The "Sort by" control maps to an ORDER BY recipe. Default (sort is None,
+    # e.g. legacy/mobile callers) keeps the original status-grouped order. Every
+    # recipe ends with created_at DESC as a stable tiebreaker.
+    order_by = {
+        "newest": [Ticket.created_at.desc()],
+        "oldest": [Ticket.created_at.asc()],
+        "severity": [severity_rank.asc(), Ticket.created_at.desc()],
+        "status": [status_rank.asc(), severity_rank.asc(), Ticket.created_at.desc()],
+        "unassigned": [
+            unassigned_rank.asc(),
             status_rank.asc(),
             severity_rank.asc(),
             Ticket.created_at.desc(),
-        )
+        ],
+    }.get(sort, [status_rank.asc(), severity_rank.asc(), Ticket.created_at.desc()])
+    rows = (
+        q.order_by(*order_by)
         .offset(offset)
         .limit(limit)
         .all()
@@ -415,6 +464,8 @@ def ticket_status_counts(
     product: Optional[str] = Query(default=None),
     search: Optional[str] = Query(default=None),
     created_within_days: Optional[int] = Query(default=None, ge=1, le=3650),
+    assigned_engineer_id: Optional[int] = Query(default=None, ge=1),
+    business_name: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -441,6 +492,10 @@ def ticket_status_counts(
         q = q.filter(Ticket.severity == severity.upper())
     if product:
         q = q.filter(Ticket.product_category == product)
+    if assigned_engineer_id:
+        q = q.filter(Ticket.assigned_engineer_id == assigned_engineer_id)
+    if business_name:
+        q = q.filter(Ticket.business_name == business_name)
     if created_within_days:
         cutoff = datetime.now(timezone.utc) - timedelta(days=created_within_days)
         q = q.filter(Ticket.created_at >= cutoff)
