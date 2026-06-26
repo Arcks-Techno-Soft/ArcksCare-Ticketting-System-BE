@@ -128,6 +128,8 @@ def _bootstrap_db() -> None:
     # themselves are created by create_all below).
     ensure_worknote_attempt_column(engine)
     ensure_installation_note_attempt_column(engine)
+    # Warranty invoice-number column on any pre-existing warranties table.
+    warranties_router.ensure_warranty_invoice_number_column(engine)
     Base.metadata.create_all(bind=engine)
     # One-time, idempotent: fold pre-attempts work notes into a synthetic
     # ended attempt so they remain visible under the new attempts UI. Must run

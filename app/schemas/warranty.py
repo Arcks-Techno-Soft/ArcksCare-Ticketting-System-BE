@@ -15,13 +15,16 @@ ALLOWED_WARRANTY_MONTHS_MAX = 120
 class WarrantyCreate(BaseModel):
     product_name: str = Field(min_length=1, max_length=300)
     serial_number: str = Field(min_length=1, max_length=120)
+    # Invoice number from the sale — mandatory at registration.
+    invoice_number: str = Field(min_length=1, max_length=120)
+    # The invoice date (shown in the UI as "Invoice Date").
     sale_date: date
     warranty_months: int = Field(
         ge=ALLOWED_WARRANTY_MONTHS_MIN, le=ALLOWED_WARRANTY_MONTHS_MAX
     )
     notes: Optional[str] = Field(default=None, max_length=2000)
 
-    @field_validator("product_name", "serial_number")
+    @field_validator("product_name", "serial_number", "invoice_number")
     @classmethod
     def _strip_required(cls, v: str) -> str:
         v = v.strip()
@@ -48,6 +51,7 @@ class WarrantyOut(BaseModel):
     id: int
     product_name: str
     serial_number: str
+    invoice_number: Optional[str] = None
     sale_date: date
     warranty_months: int
     expiry_date: date
