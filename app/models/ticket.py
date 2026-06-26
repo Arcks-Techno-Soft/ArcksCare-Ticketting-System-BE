@@ -68,6 +68,10 @@ class Ticket(Base):
     phone: Mapped[str] = mapped_column(String(20), index=True)
     email: Mapped[Optional[str]] = mapped_column(String(200), nullable=True, index=True)
     business_type: Mapped[str] = mapped_column(String(60))
+    # The contact person's role at the business (Owner, Manager, Cashier, Chef,
+    # Captain/Waiter, or a free-typed "Other"). NULL on legacy tickets and on
+    # staff-raised tickets where it wasn't collected.
+    contact_person_profile: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
 
     # Address (line 1, city, state, pincode are required; line 2/3 are optional)
     address_line1: Mapped[str] = mapped_column(String(200))

@@ -37,6 +37,27 @@ def ensure_raised_by_column(engine: Engine) -> None:
         conn.execute(text(f"ALTER TABLE {qualify('tickets')} ADD COLUMN raised_by_id INTEGER"))
 
 
+def ensure_contact_person_profile_column(engine: Engine) -> None:
+    """Add tickets.contact_person_profile if it's missing.
+
+    `create_all` adds new tables but never new columns on existing tables, so
+    this small idempotent ALTER backfills the column for databases that pre-date
+    the "contact person profile" feature. Works on SQLite + Postgres. Existing
+    rows get NULL. Scoped to DB_SCHEMA so a test backend can NEVER alter the
+    public/production table.
+    """
+    insp = inspect(engine)
+    if "tickets" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # Fresh DB — create_all will include the column.
+    existing = {c["name"] for c in insp.get_columns("tickets", schema=MIGRATION_SCHEMA)}
+    if "contact_person_profile" in existing:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text(f"ALTER TABLE {qualify('tickets')} ADD COLUMN contact_person_profile VARCHAR(60)")
+        )
+
+
 def ensure_ticket_soft_delete_columns(engine: Engine) -> None:
     """Add tickets.deleted_at / deleted_by_id if missing.
 
@@ -103,6 +124,7 @@ def create_ticket(
         phone=payload.phone,
         email=(payload.email or "").strip().lower() or None,
         business_type=payload.business_type,
+        contact_person_profile=(payload.contact_person_profile or "").strip() or None,
         address_line1=payload.address_line1.strip(),
         address_line2=(payload.address_line2 or "").strip() or None,
         address_line3=(payload.address_line3 or "").strip() or None,
