@@ -79,10 +79,11 @@ def _build_plain_body(body_params: list[str]) -> str:
     """
     ref, where, what, link = body_params
     return (
-        f"\U0001f6e0️  *New ticket {ref}*\n\n"
-        f"{where}\n"
-        f"{what}\n\n"
-        f"Open: {link}"
+        f"\U0001f195 *New Support Ticket — {ref}*\n\n"
+        f"\U0001f4cd {where}\n"
+        f"\U0001f527 {what}\n\n"
+        f"A new ticket has been raised and needs triage.\n"
+        f"\U0001f449 View & assign: {link}"
     )
 
 
@@ -95,11 +96,13 @@ def _build_assignment_body(body_params: list[str]) -> str:
     """
     ref, where, what, severity, assigned_by, link = body_params
     return (
-        f"\U0001f527 *Assigned to you: {ref}* — {severity} severity\n\n"
-        f"{where}\n"
-        f"{what}\n"
-        f"Assigned by: {assigned_by}\n\n"
-        f"Open: {link}"
+        f"\U0001f527 *Ticket Assigned to You — {ref}*\n"
+        f"\U000026a0\U0000fe0f Severity: {severity}\n\n"
+        f"\U0001f4cd {where}\n"
+        f"\U0001f6e0\U0000fe0f {what}\n"
+        f"\U0001f464 Assigned by: {assigned_by}\n\n"
+        f"Please acknowledge and attend.\n"
+        f"\U0001f449 Open: {link}"
     )
 
 
