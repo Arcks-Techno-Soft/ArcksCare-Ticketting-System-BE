@@ -128,10 +128,17 @@ def assign_engineer(db: Session, ticket: Ticket, actor: User, engineer_id: int) 
     if engineer is None or not engineer.active:
         raise HTTPException(status_code=400, detail="Invalid assignee")
 
-    # Allow assigning from ACKNOWLEDGED, and reassigning while ASSIGNED/ACCEPTED.
+    # Allow assigning from ACKNOWLEDGED, and reassigning while ASSIGNED/ACCEPTED
+    # or mid-resolution (RESOLVING) so a manager can hand a ticket to another
+    # engineer while work is in progress.
     _require_status(
         ticket,
-        {TicketStatus.ACKNOWLEDGED.value, TicketStatus.ASSIGNED.value, TicketStatus.ACCEPTED.value},
+        {
+            TicketStatus.ACKNOWLEDGED.value,
+            TicketStatus.ASSIGNED.value,
+            TicketStatus.ACCEPTED.value,
+            TicketStatus.RESOLVING.value,
+        },
     )
 
     # Warranty must be decided before a ticket can be assigned. It defaults to
@@ -146,10 +153,39 @@ def assign_engineer(db: Session, ticket: Ticket, actor: User, engineer_id: int) 
     prev_status = ticket.status
     is_reassign = ticket.assigned_engineer_id is not None and ticket.assigned_engineer_id != engineer.id
 
+    # A ticket can't be reassigned while the outgoing engineer still has an
+    # attempt in progress — that work would be silently orphaned. The manager
+    # is told to have them end the attempt first (only the assignee can end
+    # their own attempt, via end_attempt). Open attempts only exist while
+    # RESOLVING, so this is a no-op for earlier statuses.
+    if is_reassign:
+        open_attempt = _open_attempt(db, ticket)
+        if open_attempt is not None:
+            current_name = (
+                ticket.assigned_engineer.name
+                if ticket.assigned_engineer is not None
+                else "The current engineer"
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{current_name} has an open work attempt "
+                    f"(#{open_attempt.attempt_number}) on this ticket. Ask them to "
+                    "end the current attempt before reassigning it."
+                ),
+            )
+
     ticket.assigned_engineer_id = engineer.id
     ticket.assigned_by_id = actor.id
     ticket.assigned_at = datetime.now(timezone.utc)
-    ticket.status = TicketStatus.ASSIGNED.value  # collapses ACCEPTED→ASSIGNED on reassign
+    ticket.status = TicketStatus.ASSIGNED.value  # collapses ACCEPTED/RESOLVING→ASSIGNED on reassign
+
+    # The new engineer starts their own lifecycle from scratch (accept →
+    # start-work → new attempt), so drop the previous engineer's accept/start
+    # timestamps rather than leave them showing on the reassigned ticket.
+    if is_reassign:
+        ticket.accepted_at = None
+        ticket.resolving_started_at = None
 
     _log_event(
         db, ticket=ticket, actor=actor,
