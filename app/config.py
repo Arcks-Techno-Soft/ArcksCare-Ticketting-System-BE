@@ -76,10 +76,15 @@ class Settings(BaseSettings):
     twilio_auth_token: str = Field(default="")
     # Sender address, e.g. "whatsapp:+14155238886" for the Twilio Sandbox.
     twilio_whatsapp_from: str = Field(default="")
-    # Optional approved content-template SID for production WhatsApp senders.
-    # When blank, messages are sent as plain text (works with Twilio Sandbox
-    # once recipients have opted in with "join {sandbox-keyword}").
+    # Optional approved content-template SID for the NEW-TICKET alert
+    # (owners/managers). When blank, messages are sent as plain text (works with
+    # Twilio Sandbox once recipients have opted in with "join {sandbox-keyword}").
     twilio_content_sid: str = Field(default="")
+    # Optional approved content-template SID for the ENGINEER-ASSIGNMENT alert.
+    # Separate template because the assignment message has its own layout/vars
+    # ({{1}}..{{6}} = ref, location, category, severity, assigned-by, link).
+    # When blank, the assignment alert falls back to plain text (Sandbox only).
+    twilio_assignment_content_sid: str = Field(default="")
     # Base for the smart-redirect link embedded in the message body,
     # e.g. https://arcks-care-ticketting-system-fe.vercel.app
     whatsapp_link_base: str = Field(default="")

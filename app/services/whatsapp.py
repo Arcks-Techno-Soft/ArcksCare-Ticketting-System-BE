@@ -299,15 +299,26 @@ def send_engineer_assignment_alert(
 
         url, auth, from_addr = _twilio_endpoint()
         to_addr = f"whatsapp:{phone}"
-        # We deliberately do NOT reuse `twilio_content_sid` for the
-        # assignment path — that one is the new-ticket template. Production
-        # would have a separate approved template for assignment; until
-        # then we always send plain text for this alert.
-        data = {
-            "From": from_addr,
-            "To": to_addr,
-            "Body": _build_assignment_body(body_params),
-        }
+        # Use the dedicated assignment content template when one is configured
+        # (required for a production WhatsApp sender to reach the engineer
+        # outside the 24h session window). The variable order MUST match the
+        # template's {{1}}..{{6}} placeholders — same order as body_params.
+        # Falls back to plain text (Sandbox) when no assignment SID is set.
+        if settings.twilio_assignment_content_sid:
+            data = {
+                "From": from_addr,
+                "To": to_addr,
+                "ContentSid": settings.twilio_assignment_content_sid,
+                "ContentVariables": json.dumps(
+                    {str(i + 1): v for i, v in enumerate(body_params)}
+                ),
+            }
+        else:
+            data = {
+                "From": from_addr,
+                "To": to_addr,
+                "Body": _build_assignment_body(body_params),
+            }
         ok = _send_one(url, auth, data, (phone, engineer.name or engineer.username))
         logger.info(
             "Assignment alert %s -> %s (%s): %s",
