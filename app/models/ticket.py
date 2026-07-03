@@ -42,9 +42,13 @@ class WarrantyStatus(str, Enum):
 class ServiceType(str, Enum):
     """How the ticket is serviced. SITE_VISIT is the default; REMOTE_SUPPORT
     is handled without a physical visit, so it needs no signatures, PDF, or
-    spare parts and closes in a single Resolve & Close step."""
+    spare parts and closes in a single Resolve & Close step. THIRD_PARTY_SUPPORT
+    is work done on a third party's device: it captures the third-party device
+    name / issue / ticket reference, bills no spares (service charge defaults to
+    ₹0), and closes on the ENGINEER'S signature alone — no customer signature."""
     SITE_VISIT = "SITE_VISIT"
     REMOTE_SUPPORT = "REMOTE_SUPPORT"
+    THIRD_PARTY_SUPPORT = "THIRD_PARTY_SUPPORT"
 
 
 class PaymentStatus(str, Enum):
@@ -102,11 +106,21 @@ class Ticket(Base):
         String(20), default=WarrantyStatus.UNKNOWN.value, index=True
     )
     # Service delivery mode. Defaults to SITE_VISIT; an Admin/Manager or the
-    # assigned engineer can switch it to REMOTE_SUPPORT, which skips
-    # signatures, PDF and spare parts.
+    # assigned engineer can switch it to REMOTE_SUPPORT (skips signatures, PDF
+    # and spare parts) or THIRD_PARTY_SUPPORT (engineer-signature-only close,
+    # captures the three third_party_* fields below).
     service_type: Mapped[str] = mapped_column(
         String(20), default=ServiceType.SITE_VISIT.value, server_default=ServiceType.SITE_VISIT.value, index=True
     )
+
+    # Third-party support details — only meaningful when service_type is
+    # THIRD_PARTY_SUPPORT (work done on another vendor's device). Nullable so
+    # existing/other tickets stay NULL. device_name + issue_info are required
+    # before such a ticket can CLOSE; ticket_ref is optional. Editable until the
+    # ticket is closed.
+    third_party_device_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    third_party_issue_info: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    third_party_ticket_ref: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
 
     # Intake attribution. NULL when the customer self-submitted via the public
     # web form; set to the staff user (typically an Engineer) who raised the
@@ -232,8 +246,13 @@ class Ticket(Base):
             WarrantyStatus.UNDER_WARRANTY.value,
             WarrantyStatus.AMC.value,
         )
-        is_remote = self.service_type == ServiceType.REMOTE_SUPPORT.value
-        spares_billable = not is_warranty and not is_remote
+        # Spares don't bill on remote OR third-party tickets (no parts fitted on
+        # our hardware) — only the service fee carries through.
+        no_spares_billing = self.service_type in (
+            ServiceType.REMOTE_SUPPORT.value,
+            ServiceType.THIRD_PARTY_SUPPORT.value,
+        )
+        spares_billable = not is_warranty and not no_spares_billing
         spares_total = (
             sum(int(s.unit_price_inr) * int(s.quantity) for s in self.spares)
             if spares_billable

@@ -86,6 +86,7 @@ def _bootstrap_db() -> None:
         ensure_payment_columns,
         ensure_service_fee_column,
         ensure_service_type_column,
+        ensure_third_party_columns,
         seed_spare_catalog,
     )
     from .services.sub_engineers import ensure_sub_engineer_fee_column
@@ -112,6 +113,7 @@ def _bootstrap_db() -> None:
     ensure_service_fee_column(engine)
     ensure_service_type_column(engine)
     ensure_payment_columns(engine)
+    ensure_third_party_columns(engine)
     ensure_user_profile_columns(engine)
     ensure_shipment_delivered_at_column(engine)
     ensure_resolution_field_signing_columns(engine)

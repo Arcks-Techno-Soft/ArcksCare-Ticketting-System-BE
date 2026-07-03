@@ -230,6 +230,56 @@ def ensure_payment_columns(engine: Engine) -> None:
                 ) from last_exc
 
 
+def ensure_third_party_columns(engine: Engine) -> None:
+    """Add the THIRD_PARTY_SUPPORT detail columns to tickets if missing.
+
+    All three are nullable with no default, so existing rows stay NULL (only
+    third-party tickets ever populate them). Idempotent; uses the same
+    bounded-lock retry as ensure_payment_columns for safe zero-downtime deploys.
+    """
+    insp = inspect(engine)
+    if "tickets" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # Fresh DB — create_all will include the columns.
+
+    is_pg = engine.dialect.name == "postgresql"
+    wanted = [
+        ("third_party_device_name", "VARCHAR(120)"),
+        ("third_party_issue_info", "TEXT"),
+        ("third_party_ticket_ref", "VARCHAR(120)"),
+    ]
+    for name, coltype in wanted:
+        if _has_column(engine, "tickets", name):
+            continue
+        ddl = f"ALTER TABLE {qualify('tickets')} ADD COLUMN {name} {coltype}"
+        attempts = 6
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                with engine.begin() as conn:
+                    if is_pg:
+                        conn.execute(text("SET LOCAL lock_timeout = '4s'"))
+                        conn.execute(text("SET LOCAL statement_timeout = '120s'"))
+                    conn.execute(text(ddl))
+                logger.info("Added tickets.%s column", name)
+                break
+            except OperationalError as exc:
+                last_exc = exc
+                if _has_column(engine, "tickets", name):
+                    break  # added concurrently by another instance
+                logger.warning(
+                    "ensure_third_party_columns(%s) attempt %d/%d failed (table busy?): %s",
+                    name, attempt, attempts, exc,
+                )
+                if attempt < attempts:
+                    time.sleep(3 * attempt)
+        else:
+            if not _has_column(engine, "tickets", name):
+                raise RuntimeError(
+                    f"Could not add tickets.{name} after retries — table stayed "
+                    "locked. Re-deploy or run the ALTER manually in a quiet window."
+                ) from last_exc
+
+
 # --------------------------- charge calculation -------------------------- #
 
 def compute_charges(ticket: Ticket) -> Dict[str, object]:
@@ -250,8 +300,13 @@ def compute_charges(ticket: Ticket) -> Dict[str, object]:
         WarrantyStatus.UNDER_WARRANTY.value,
         WarrantyStatus.AMC.value,
     )
-    is_remote = ticket.service_type == ServiceType.REMOTE_SUPPORT.value
-    spares_billable = not is_warranty and not is_remote
+    # Spare parts never bill on remote OR third-party tickets — only the
+    # service fee carries through.
+    no_spares_billing = ticket.service_type in (
+        ServiceType.REMOTE_SUPPORT.value,
+        ServiceType.THIRD_PARTY_SUPPORT.value,
+    )
+    spares_billable = not is_warranty and not no_spares_billing
     line_items = []
     spares_list_price_total = 0
     for s in ticket.spares:

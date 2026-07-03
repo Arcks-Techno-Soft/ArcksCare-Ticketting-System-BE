@@ -122,7 +122,15 @@ class UpdateSeverityRequest(BaseModel):
 
 
 class UpdateServiceTypeRequest(BaseModel):
-    service_type: str  # SITE_VISIT / REMOTE_SUPPORT
+    service_type: str  # SITE_VISIT / REMOTE_SUPPORT / THIRD_PARTY_SUPPORT
+
+
+class UpdateThirdPartyInfoRequest(BaseModel):
+    """Third-party support details. All optional here so the engineer can save
+    progressively; device_name + issue_info are enforced at close time."""
+    third_party_device_name: Optional[str] = Field(default=None, max_length=120)
+    third_party_issue_info: Optional[str] = Field(default=None, max_length=5000)
+    third_party_ticket_ref: Optional[str] = Field(default=None, max_length=120)
 
 
 class TicketEventOut(BaseModel):

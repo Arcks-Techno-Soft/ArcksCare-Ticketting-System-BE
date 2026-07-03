@@ -219,7 +219,18 @@ def record_engineer_signature(
         )
     resolution = _require_resolution(ticket)
     _reject_if_field_signing(resolution)
-    if resolution.customer_signed_at is None:
+    is_third_party = ticket.service_type == ServiceType.THIRD_PARTY_SUPPORT.value
+    if is_third_party:
+        # Third-party tickets close on the engineer signature alone (no customer
+        # signature), but the device name + issue info must be recorded first.
+        if not (ticket.third_party_device_name or "").strip() or not (
+            ticket.third_party_issue_info or ""
+        ).strip():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Enter the third-party device name and issue info before closing.",
+            )
+    elif resolution.customer_signed_at is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Customer hasn't signed yet — engineer signs last",

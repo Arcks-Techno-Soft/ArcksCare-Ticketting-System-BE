@@ -206,6 +206,13 @@ class TicketResponse(BaseModel):
     warranty_status: str
     service_type: str
 
+    # Third-party support details (only populated when service_type is
+    # THIRD_PARTY_SUPPORT). device_name + issue_info are required before such a
+    # ticket can close; ticket_ref is optional.
+    third_party_device_name: Optional[str] = None
+    third_party_issue_info: Optional[str] = None
+    third_party_ticket_ref: Optional[str] = None
+
     # Payment tracking. NULL payment_status = legacy ticket (never gated).
     # PENDING / COLLECTED for new-flow tickets. `payment_required` is the
     # computed gate (out-of-warranty, or covered + charges) the UIs key off so

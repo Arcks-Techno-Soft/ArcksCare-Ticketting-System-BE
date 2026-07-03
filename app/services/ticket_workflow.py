@@ -359,6 +359,21 @@ def compute_close_pending(ticket: Ticket) -> list[str]:
                 pending.append("Engineer signature not collected")
             if res.pdf_generated_at is None:
                 pending.append("Resolution PDF not generated")
+    # Third-party support closes on the engineer signature alone (no customer
+    # signature), but the third-party device name + issue info must be filled in.
+    elif ticket.service_type == ServiceType.THIRD_PARTY_SUPPORT.value:
+        if not (ticket.third_party_device_name or "").strip():
+            pending.append("Third-party device name not entered")
+        if not (ticket.third_party_issue_info or "").strip():
+            pending.append("Third-party issue info not entered")
+        res = ticket.resolution
+        if res is None:
+            pending.append("Resolution not completed (engineer signature / PDF)")
+        else:
+            if res.engineer_signed_at is None:
+                pending.append("Engineer signature not collected")
+            if res.pdf_generated_at is None:
+                pending.append("Resolution PDF not generated")
 
     for se in ticket.sub_engineers:
         if se.fee_inr is None:
@@ -465,9 +480,18 @@ def collect_payment(db: Session, ticket: Ticket, actor: User, amount_inr: int) -
     #   - site visit: both signatures + PDF must be in place.
     if fully_paid and ticket.status == TicketStatus.RESOLVED.value:
         is_remote = ticket.service_type == ServiceType.REMOTE_SUPPORT.value
+        is_third_party = ticket.service_type == ServiceType.THIRD_PARTY_SUPPORT.value
         res = ticket.resolution
+        # Remote: no signatures needed. Third-party: engineer signature + PDF
+        # only (no customer). Site visit: both signatures + PDF.
         ready = is_remote or (
-            res is not None
+            is_third_party
+            and res is not None
+            and res.engineer_signed_at is not None
+            and res.pdf_generated_at is not None
+        ) or (
+            not is_third_party
+            and res is not None
             and res.customer_signed_at is not None
             and res.engineer_signed_at is not None
             and res.pdf_generated_at is not None
@@ -900,9 +924,61 @@ def set_service_type(db: Session, ticket: Ticket, actor: User, new_type: str) ->
         db, ticket=ticket, actor=actor, event_type="SERVICE_TYPE_UPDATED",
         payload={"from": prev, "to": new_type},
     )
+    # Third-party support defaults its service charge to ₹0 (users edit it
+    # afterwards); reset any fee carried over from the previous mode.
+    if new_type == ServiceType.THIRD_PARTY_SUPPORT.value:
+        ticket.service_fee_inr = 0
     # Switching to remote on an out-of-warranty ticket seeds the default fee.
     _maybe_default_remote_oow_fee(ticket)
     db.commit()
     db.refresh(ticket)
     logger.info("Ticket %s service type %s → %s by %s", ticket.reference, prev, new_type, actor.username)
+    return ticket
+
+
+def set_third_party_info(
+    db: Session,
+    ticket: Ticket,
+    actor: User,
+    device_name: Optional[str],
+    issue_info: Optional[str],
+    ticket_ref: Optional[str],
+) -> Ticket:
+    """Set the third-party support details (device name / issue info / ticket
+    reference). Admin/Manager or the assigned engineer, editable until the
+    ticket is CLOSED. Empty strings are stored as NULL.
+
+    Device name + issue info are what let a THIRD_PARTY_SUPPORT ticket close
+    (enforced at sign-off / compute_close_pending); this endpoint just records
+    them and doesn't itself require them so the engineer can save progressively.
+    """
+    is_staff = actor.role in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
+    if not is_staff and ticket.assigned_engineer_id != actor.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Only Admin/Manager or the assigned engineer can edit third-party details",
+        )
+    if ticket.status == TicketStatus.CLOSED.value:
+        raise HTTPException(
+            status_code=400,
+            detail="Third-party details can't be changed once the ticket is closed.",
+        )
+
+    def _clean(v: Optional[str]) -> Optional[str]:
+        v = (v or "").strip()
+        return v or None
+
+    ticket.third_party_device_name = _clean(device_name)
+    ticket.third_party_issue_info = _clean(issue_info)
+    ticket.third_party_ticket_ref = _clean(ticket_ref)
+    _log_event(
+        db, ticket=ticket, actor=actor, event_type="THIRD_PARTY_INFO_UPDATED",
+        payload={
+            "device_name": ticket.third_party_device_name,
+            "ticket_ref": ticket.third_party_ticket_ref,
+        },
+    )
+    db.commit()
+    db.refresh(ticket)
+    logger.info("Ticket %s third-party details updated by %s", ticket.reference, actor.username)
     return ticket

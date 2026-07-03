@@ -45,6 +45,7 @@ from ..schemas.auth import (
     TicketSpareOut,
     UpdateRosterSubEngineerRequest,
     UpdateServiceTypeRequest,
+    UpdateThirdPartyInfoRequest,
     UpdateSeverityRequest,
     UpdateServiceFeeRequest,
     UpdateSubEngineerFeeRequest,
@@ -90,6 +91,7 @@ from ..services.ticket_workflow import (
     remove_engineer,
     resolve,
     set_service_type,
+    set_third_party_info,
     soft_delete_ticket,
     start_attempt,
     start_work,
@@ -728,6 +730,25 @@ def patch_service_type(
     REMOTE_SUPPORT. Remote support skips signatures, PDF and spare parts."""
     ticket = _load_ticket(db, reference, user)
     return set_service_type(db, ticket, user, body.service_type.upper())
+
+
+@router.patch("/tickets/{reference}/third-party-info", response_model=TicketResponse)
+def patch_third_party_info(
+    reference: str,
+    body: UpdateThirdPartyInfoRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Admin/Manager or the assigned engineer set the third-party support
+    details (device name / issue info / ticket reference). Editable until the
+    ticket is closed."""
+    ticket = _load_ticket(db, reference, user)
+    return set_third_party_info(
+        db, ticket, user,
+        body.third_party_device_name,
+        body.third_party_issue_info,
+        body.third_party_ticket_ref,
+    )
 
 
 # --------------------------- engineer actions --------------------------- #

@@ -33,7 +33,7 @@ from reportlab.platypus import (
 )
 
 from ..models.resolution import Resolution
-from ..models.ticket import Ticket
+from ..models.ticket import ServiceType, Ticket
 from .spares import compute_charges
 
 logger = logging.getLogger("skposcare.pdf")
@@ -230,6 +230,17 @@ def generate_resolution_pdf(ticket: Ticket, resolution: Resolution) -> bytes:
     ], body))
     story.append(Spacer(1, 4 * mm))
 
+    is_third_party = ticket.service_type == ServiceType.THIRD_PARTY_SUPPORT.value
+
+    # ---- Third-party details (only for third-party support tickets) ----
+    if is_third_party:
+        story.append(_full_card("THIRD-PARTY DETAILS", [
+            ("Device name", ticket.third_party_device_name or "—"),
+            ("Issue info", (ticket.third_party_issue_info or "—").replace("\n", "<br/>")),
+            ("Ticket reference", ticket.third_party_ticket_ref or "—"),
+        ], body))
+        story.append(Spacer(1, 4 * mm))
+
     # ---- Assignment: 2-column key/value grid ----
     story.append(_grid_card("ASSIGNMENT", [
         ("Engineer", eng_name),
@@ -252,17 +263,10 @@ def generate_resolution_pdf(ticket: Ticket, resolution: Resolution) -> bytes:
 
     # ---- Signatures ----
     story.append(Spacer(1, 6 * mm))
-    sig_left = _signature_cell(
-        "Customer",
-        ticket.contact_name,
-        resolution.customer_signed_at,
-        cust_bytes,
-        body,
-    )
-    # When the resolution was signed remotely, the second signature belongs to
-    # the sub-engineer who collected it on-site — label and name it as such.
+    # The engineer's signature cell (the second signature belongs to the
+    # sub-engineer who collected it on-site in the remote field-signing flow).
     if resolution.engineer_signer_name:
-        sig_right = _signature_cell(
+        sig_engineer = _signature_cell(
             "Sub-Engineer",
             resolution.engineer_signer_name,
             resolution.engineer_signed_at,
@@ -270,14 +274,26 @@ def generate_resolution_pdf(ticket: Ticket, resolution: Resolution) -> bytes:
             body,
         )
     else:
-        sig_right = _signature_cell(
+        sig_engineer = _signature_cell(
             "Engineer",
             eng_name,
             resolution.engineer_signed_at,
             engineer_bytes,
             body,
         )
-    sig_body = Table([[sig_left, sig_right]], colWidths=[CARD_WIDTH_HALF, CARD_WIDTH_HALF])
+    if is_third_party:
+        # Third-party tickets close on the engineer signature alone — no
+        # customer signature cell.
+        sig_body = Table([[sig_engineer]], colWidths=[CARD_WIDTH_FULL])
+    else:
+        sig_left = _signature_cell(
+            "Customer",
+            ticket.contact_name,
+            resolution.customer_signed_at,
+            cust_bytes,
+            body,
+        )
+        sig_body = Table([[sig_left, sig_engineer]], colWidths=[CARD_WIDTH_HALF, CARD_WIDTH_HALF])
     sig_body.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 7),
