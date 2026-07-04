@@ -22,7 +22,12 @@ from sqlalchemy.orm import Session
 from ..database import MIGRATION_SCHEMA, get_db, qualify
 from ..models.user import User, UserRole
 from ..models.warranty import Warranty
-from ..schemas.warranty import WarrantyCreate, WarrantyLookupOut, WarrantyOut
+from ..schemas.warranty import (
+    WarrantyBatchCreate,
+    WarrantyCreate,
+    WarrantyLookupOut,
+    WarrantyOut,
+)
 from ..services.auth import get_current_user, require_role
 
 logger = logging.getLogger("skposcare")
@@ -161,6 +166,78 @@ def create_warranty(
         warranty.warranty_months, warranty.expiry_date,
     )
     return warranty
+
+
+@router.post("/batch", response_model=List[WarrantyOut], status_code=status.HTTP_201_CREATED)
+def create_warranties_batch(
+    body: WarrantyBatchCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(UserRole.ADMIN, UserRole.MANAGER)),
+):
+    """Register several products under one invoice, atomically. invoice_number,
+    sale_date and notes are shared; each product has its own name, serial and
+    duration. Either every product is registered or none is — if any serial is a
+    duplicate (within the batch or already in the registry) the whole request is
+    rejected with 409 and nothing is written."""
+    # 1. Reject duplicate serials WITHIN the batch (same unit twice on one invoice).
+    norms: list[str] = []
+    seen: dict[str, str] = {}
+    for item in body.products:
+        norm = Warranty.normalise_serial(item.serial_number)
+        if norm in seen:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Serial '{item.serial_number.strip()}' appears more than once in this invoice.",
+            )
+        seen[norm] = item.serial_number.strip()
+        norms.append(norm)
+
+    # 2. Reject serials already registered — report all conflicts at once.
+    existing = (
+        db.query(Warranty)
+        .filter(Warranty.serial_number_norm.in_(norms))
+        .all()
+    )
+    if existing:
+        dupes = ", ".join(f"'{w.serial_number}' ({w.product_name})" for w in existing)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A warranty is already registered for: {dupes}.",
+        )
+
+    # 3. Build every row, then commit once so the invoice is all-or-nothing.
+    rows: list[Warranty] = []
+    for item, norm in zip(body.products, norms):
+        expiry = _add_months(body.sale_date, item.warranty_months)
+        rows.append(Warranty(
+            product_name=item.product_name.strip(),
+            serial_number=item.serial_number.strip(),
+            serial_number_norm=norm,
+            invoice_number=body.invoice_number.strip(),
+            sale_date=body.sale_date,
+            warranty_months=item.warranty_months,
+            expiry_date=expiry,
+            notes=body.notes,
+            created_by_id=user.id,
+        ))
+    db.add_all(rows)
+    try:
+        db.commit()
+    except Exception:
+        # Race: a serial slipped in between the check above and the commit —
+        # the unique index rejects it and the whole batch rolls back.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A warranty is already registered for one of these serial numbers.",
+        )
+    for r in rows:
+        db.refresh(r)
+    logger.info(
+        "Warranty batch registered: %d products on invoice %s by %s",
+        len(rows), body.invoice_number.strip(), user.username,
+    )
+    return rows
 
 
 @router.delete("/{warranty_id}", status_code=status.HTTP_204_NO_CONTENT)
