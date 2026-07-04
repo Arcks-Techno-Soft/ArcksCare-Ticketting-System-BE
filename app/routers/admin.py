@@ -231,15 +231,15 @@ def set_user_sales_rep(
     return target
 
 
-# --------------------------- analytics (Admin-only) --------------------- #
+# --------------------------- analytics (Admin/Manager) ------------------ #
 
 @router.get("/analytics")
 def get_analytics(
     days: int = Query(default=30, ge=7, le=365),
     db: Session = Depends(get_db),
-    _user: User = Depends(require_role(UserRole.ADMIN)),
+    _user: User = Depends(require_role(UserRole.ADMIN, UserRole.MANAGER)),
 ):
-    """Aggregated metrics for the analytics dashboard."""
+    """Aggregated metrics for the analytics dashboard. Admin/Manager."""
     return compute_analytics(db, days)
 
 
@@ -248,9 +248,9 @@ def get_ticket_report(
     date_from: date = Query(..., description="Start of created-date range (IST, inclusive)"),
     date_to: date = Query(..., description="End of created-date range (IST, inclusive)"),
     db: Session = Depends(get_db),
-    _user: User = Depends(require_role(UserRole.ADMIN)),
+    _user: User = Depends(require_role(UserRole.ADMIN, UserRole.MANAGER)),
 ):
-    """Date-ranged ticket report with SLA escalation analysis (Admin-only)."""
+    """Date-ranged ticket report with SLA escalation analysis (Admin/Manager)."""
     if date_to < date_from:
         raise HTTPException(status_code=400, detail="date_to must be on or after date_from")
     return compute_ticket_report(db, date_from, date_to)
