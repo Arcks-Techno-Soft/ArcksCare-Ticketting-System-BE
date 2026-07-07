@@ -1065,6 +1065,47 @@ def _ensure_roster_entry(
     return entry
 
 
+@router.get("/business-name-suggestions", response_model=List[str])
+def list_business_name_suggestions(
+    q: str = Query(..., min_length=2, max_length=120),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Distinct business names starting with `q`, drawn from past tickets and
+    installations — feeds the business-name autocomplete on staff forms so
+    the same customer keeps one spelling across their history.
+    """
+    like = f"{q.strip()}%"
+    limit = 10
+
+    def matches(column):
+        return (
+            db.query(column)
+            .filter(
+                column.ilike(like),
+                # Sample/test rows are prefixed TEST_ — keep them out of
+                # suggestions so staff never reuse them for real customers.
+                ~column.ilike(r"TEST\_%", escape="\\"),
+            )
+            .distinct()
+            .order_by(column)
+            .limit(limit)
+            .all()
+        )
+
+    names: List[str] = []
+    seen: set[str] = set()
+    for (name,) in matches(Ticket.business_name) + matches(Installation.business_name):
+        clean = (name or "").strip()
+        key = clean.lower()
+        if not clean or key in seen:
+            continue
+        seen.add(key)
+        names.append(clean)
+    names.sort(key=str.lower)
+    return names[:limit]
+
+
 @router.get("/tickets/{reference}/sub-engineers", response_model=List[SubEngineerOut])
 def list_sub_engineers(
     reference: str,
