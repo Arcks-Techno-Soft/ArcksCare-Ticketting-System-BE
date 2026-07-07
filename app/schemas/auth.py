@@ -240,6 +240,15 @@ class SubEngineerRosterOut(BaseModel):
     created_by: Optional[UserOut] = None
 
 
+class BusinessNameSuggestion(BaseModel):
+    """One business-name autocomplete hit. `business_type` is the category last
+    recorded for that name (from a past ticket or installation) so the staff
+    form can pre-fill it; it may be empty if none was ever stored."""
+
+    business_name: str
+    business_type: str = ""
+
+
 class CreateRosterSubEngineerRequest(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     phone: str = Field(min_length=7, max_length=20)

@@ -28,6 +28,7 @@ from ..schemas.auth import (
     AddTicketSpareRequest,
     AddWorkNoteRequest,
     AdditionalEngineerOut,
+    BusinessNameSuggestion,
     AssignEngineerRequest,
     ChargesSummary,
     CollectPaymentRequest,
@@ -1065,7 +1066,7 @@ def _ensure_roster_entry(
     return entry
 
 
-@router.get("/business-name-suggestions", response_model=List[str])
+@router.get("/business-name-suggestions", response_model=List[BusinessNameSuggestion])
 def list_business_name_suggestions(
     q: str = Query(..., min_length=2, max_length=120),
     db: Session = Depends(get_db),
@@ -1074,36 +1075,53 @@ def list_business_name_suggestions(
     """Distinct business names starting with `q`, drawn from past tickets and
     installations — feeds the business-name autocomplete on staff forms so
     the same customer keeps one spelling across their history.
+
+    Each hit carries the category last recorded for that name (ticket
+    `business_type` or installation `business_category`, whichever is more
+    recent) so the form can pre-fill it when the name is picked.
     """
     like = f"{q.strip()}%"
     limit = 10
+    # Prefix + min-2-char filter keeps the candidate set tiny; pulling a few
+    # dozen recent rows per table is plenty to find the newest category per name.
+    fetch_cap = 40
 
-    def matches(column):
+    def recent_rows(model, name_col, category_col):
         return (
-            db.query(column)
+            db.query(name_col, category_col, model.created_at)
             .filter(
-                column.ilike(like),
+                name_col.ilike(like),
                 # Sample/test rows are prefixed TEST_ — keep them out of
                 # suggestions so staff never reuse them for real customers.
-                ~column.ilike(r"TEST\_%", escape="\\"),
+                ~name_col.ilike(r"TEST\_%", escape="\\"),
             )
-            .distinct()
-            .order_by(column)
-            .limit(limit)
+            .order_by(model.created_at.desc())
+            .limit(fetch_cap)
             .all()
         )
 
-    names: List[str] = []
+    rows = recent_rows(Ticket, Ticket.business_name, Ticket.business_type) + recent_rows(
+        Installation, Installation.business_name, Installation.business_category
+    )
+    # Most recent first so the first time we see a name we take its latest
+    # category. Convert to epoch to avoid naive/aware datetime comparisons.
+    rows.sort(key=lambda r: r[2].timestamp() if r[2] else 0.0, reverse=True)
+
+    out: List[BusinessNameSuggestion] = []
     seen: set[str] = set()
-    for (name,) in matches(Ticket.business_name) + matches(Installation.business_name):
+    for name, category, _ in rows:
         clean = (name or "").strip()
         key = clean.lower()
         if not clean or key in seen:
             continue
         seen.add(key)
-        names.append(clean)
-    names.sort(key=str.lower)
-    return names[:limit]
+        out.append(
+            BusinessNameSuggestion(
+                business_name=clean, business_type=(category or "").strip()
+            )
+        )
+    out.sort(key=lambda s: s.business_name.lower())
+    return out[:limit]
 
 
 @router.get("/tickets/{reference}/sub-engineers", response_model=List[SubEngineerOut])
