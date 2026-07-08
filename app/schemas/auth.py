@@ -321,6 +321,9 @@ class ChargesSummary(BaseModel):
     is_warranty: bool
     service_fee_inr: int
     service_fee_billable_inr: int
+    # Minimum service fee for this ticket (0 = no floor). Non-Admins can't set
+    # below this; an Admin can.
+    service_fee_min_inr: int = 0
     spares_list_price_total_inr: int
     spares_billable_total_inr: int
     grand_total_inr: int

@@ -19,6 +19,23 @@ from ..database import MIGRATION_SCHEMA, qualify
 from ..models.spare import SpareCatalog
 from ..models.ticket import ServiceType, Ticket, WarrantyStatus
 
+# Minimum (and auto-filled default) out-of-warranty service charge, by service
+# type. A site visit costs more than remote support — someone travels on-site.
+# Covered (under-warranty / AMC) and third-party tickets have no minimum (0).
+OOW_MIN_FEE_INR = {
+    ServiceType.SITE_VISIT.value: 800,
+    ServiceType.REMOTE_SUPPORT.value: 600,
+}
+
+
+def oow_min_service_fee_inr(ticket: Ticket) -> int:
+    """The minimum service charge for this ticket: the per-service-type
+    out-of-warranty floor when the ticket is out of warranty, else 0 (no floor).
+    Staff may edit at/above this; only an Admin can set below it."""
+    if ticket.warranty_status == WarrantyStatus.OUT_OF_WARRANTY.value:
+        return OOW_MIN_FEE_INR.get(ticket.service_type, 0)
+    return 0
+
 logger = logging.getLogger("skposcare.spares")
 
 
@@ -333,6 +350,9 @@ def compute_charges(ticket: Ticket) -> Dict[str, object]:
         "is_warranty": is_warranty,
         "service_fee_inr": service_fee,
         "service_fee_billable_inr": service_fee_billable,
+        # Floor for the service fee (0 when none applies). The UI pre-fills and
+        # caps non-Admin edits to this; an Admin may go below it.
+        "service_fee_min_inr": oow_min_service_fee_inr(ticket),
         "spares_list_price_total_inr": spares_list_price_total,
         "spares_billable_total_inr": spares_billable_total,
         "grand_total_inr": spares_billable_total + service_fee_billable,

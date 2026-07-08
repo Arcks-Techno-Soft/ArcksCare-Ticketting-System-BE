@@ -77,7 +77,7 @@ from ..services.signing import (
     record_customer_signature_via_engineer,
     record_engineer_signature,
 )
-from ..services.spares import compute_charges
+from ..services.spares import compute_charges, oow_min_service_fee_inr
 from ..services.storage import get_storage
 from ..services.ticket_workflow import (
     accept,
@@ -1565,7 +1565,21 @@ def update_service_fee(
     ticket = _load_ticket(db, reference, user)
     if not _can_manage_spares(ticket, user):
         raise HTTPException(status_code=403, detail="Not allowed to edit charges on this ticket")
-    ticket.service_fee_inr = int(body.service_fee_inr)
+    new_fee = int(body.service_fee_inr)
+    # Out-of-warranty tickets carry a per-service-type minimum charge. Anyone
+    # who can edit charges may set it at/above that floor; only an Admin (the
+    # "owner") may go below it (a waiver/discount).
+    min_fee = oow_min_service_fee_inr(ticket)
+    is_owner = user.role in (UserRole.ADMIN.value, UserRole.OWNER.value)
+    if new_fee < min_fee and not is_owner:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Service charge can't be below ₹{min_fee} for this ticket. "
+                "Only an Admin can set a lower amount."
+            ),
+        )
+    ticket.service_fee_inr = new_fee
     db.commit()
     db.refresh(ticket)
     return compute_charges(ticket)

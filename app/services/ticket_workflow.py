@@ -31,6 +31,7 @@ from ..models.ticket import (
     WorkNote,
 )
 from ..models.user import User, UserRole
+from .spares import oow_min_service_fee_inr
 
 logger = logging.getLogger("skposcare.workflow")
 
@@ -853,23 +854,15 @@ def update_severity(db: Session, ticket: Ticket, actor: User, new_severity: str)
     return ticket
 
 
-# Flat default service fee applied to remote out-of-warranty tickets (there's
-# no on-site assessment, so a standard remote charge applies). Editable by the
-# engineer afterwards. Site visits stay ₹0 by default (engineer sets on-site),
-# and covered (under-warranty / AMC) tickets stay ₹0 by default.
-REMOTE_OOW_DEFAULT_FEE_INR = 800
-
-
-def _maybe_default_remote_oow_fee(ticket: Ticket) -> None:
-    """Seed the ₹800 default service fee when a ticket becomes remote +
-    out-of-warranty and no fee has been set yet. Never overrides an existing
-    (engineer-entered) fee."""
-    if (
-        ticket.service_type == ServiceType.REMOTE_SUPPORT.value
-        and ticket.warranty_status == WarrantyStatus.OUT_OF_WARRANTY.value
-        and int(ticket.service_fee_inr or 0) == 0
-    ):
-        ticket.service_fee_inr = REMOTE_OOW_DEFAULT_FEE_INR
+def _maybe_seed_oow_min_fee(ticket: Ticket) -> None:
+    """Ensure an out-of-warranty ticket's service fee is at least the
+    per-service-type minimum (Remote ₹600, Site visit ₹800 — see
+    spares.OOW_MIN_FEE_INR). Only raises a below-minimum fee up to the floor;
+    never lowers an already-higher (engineer-entered) fee. No-op for covered or
+    third-party tickets, whose minimum is ₹0."""
+    min_fee = oow_min_service_fee_inr(ticket)
+    if min_fee and int(ticket.service_fee_inr or 0) < min_fee:
+        ticket.service_fee_inr = min_fee
 
 
 def update_warranty(db: Session, ticket: Ticket, actor: User, new_status: str) -> Ticket:
@@ -888,7 +881,7 @@ def update_warranty(db: Session, ticket: Ticket, actor: User, new_status: str) -
         payload={"from": prev, "to": new_status},
     )
     # Seed the remote out-of-warranty default fee if applicable.
-    _maybe_default_remote_oow_fee(ticket)
+    _maybe_seed_oow_min_fee(ticket)
     db.commit()
     db.refresh(ticket)
     logger.info("Ticket %s warranty %s → %s by %s", ticket.reference, prev, new_status, actor.username)
@@ -929,7 +922,7 @@ def set_service_type(db: Session, ticket: Ticket, actor: User, new_type: str) ->
     if new_type == ServiceType.THIRD_PARTY_SUPPORT.value:
         ticket.service_fee_inr = 0
     # Switching to remote on an out-of-warranty ticket seeds the default fee.
-    _maybe_default_remote_oow_fee(ticket)
+    _maybe_seed_oow_min_fee(ticket)
     db.commit()
     db.refresh(ticket)
     logger.info("Ticket %s service type %s → %s by %s", ticket.reference, prev, new_type, actor.username)
