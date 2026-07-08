@@ -880,7 +880,15 @@ def update_warranty(db: Session, ticket: Ticket, actor: User, new_status: str) -
         db, ticket=ticket, actor=actor, event_type="WARRANTY_UPDATED",
         payload={"from": prev, "to": new_status},
     )
-    # Seed the remote out-of-warranty default fee if applicable.
+    # Moving out-of-warranty → covered (under-warranty or AMC) clears the
+    # service charge: a now-covered ticket defaults to ₹0 (the OOW minimum no
+    # longer applies). Staff can still enter a charge afterwards if needed.
+    if prev == WarrantyStatus.OUT_OF_WARRANTY.value and new_status in (
+        WarrantyStatus.UNDER_WARRANTY.value,
+        WarrantyStatus.AMC.value,
+    ):
+        ticket.service_fee_inr = 0
+    # Seed the per-service-type out-of-warranty minimum if now applicable.
     _maybe_seed_oow_min_fee(ticket)
     db.commit()
     db.refresh(ticket)
