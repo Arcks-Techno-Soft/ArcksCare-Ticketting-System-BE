@@ -48,6 +48,13 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
     resolved_count = sum(1 for t in all_tickets if t.status == TicketStatus.RESOLVED.value)
     closed_count = sum(1 for t in all_tickets if t.status == TicketStatus.CLOSED.value)
 
+    # The whole page reports on ONE cohort: tickets CREATED in the window
+    # (window_tickets). "Resolved · Nd" = how many of this period's tickets are
+    # resolved; "Avg resolution" = average Resolving→Resolved time over those.
+    # Every breakdown below uses the same cohort, so the headline counts and the
+    # per-category tables tie out. (The per-day "resolved" line and the
+    # resolution-time trend remain time-series keyed on resolved_at — they show
+    # WHEN resolutions happened, so they aren't expected to sum to these cards.)
     resolved_in_window = [
         t for t in window_tickets
         if t.resolved_at is not None and t.resolving_started_at is not None
@@ -58,9 +65,9 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
         if resolved_in_window else 0.0
     )
 
-    # ---- Status breakdown ----
+    # ---- Status breakdown (tickets created in the window) ----
     by_status: Dict[str, int] = defaultdict(int)
-    for t in all_tickets:
+    for t in window_tickets:
         by_status[t.status] += 1
 
     # ---- Severity breakdown ----
@@ -104,9 +111,9 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
         for row in days_series
     ]
 
-    # ---- Avg resolution time per issue category ----
+    # ---- Avg resolution time per issue category (tickets created in the window) ----
     by_issue: Dict[str, List[float]] = defaultdict(list)
-    for t in all_tickets:
+    for t in window_tickets:
         if t.resolved_at is None or t.resolving_started_at is None:
             continue
         by_issue[t.issue_category].append(_hours_between(t.resolving_started_at, t.resolved_at))
@@ -123,9 +130,9 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
         reverse=True,
     )
 
-    # ---- Per-product breakdown ----
+    # ---- Per-product breakdown (tickets created in the window) ----
     by_product: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"total": 0, "resolved": 0, "hours": []})
-    for t in all_tickets:
+    for t in window_tickets:
         bucket = by_product[t.product_category]
         bucket["total"] += 1
         if t.resolved_at and t.resolving_started_at:
@@ -156,7 +163,7 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
         e.id: {"engineer_id": e.id, "name": e.name, "assigned": 0, "resolved": 0, "hours": []}
         for e in engineers
     }
-    for t in all_tickets:
+    for t in window_tickets:
         if t.assigned_engineer_id and t.assigned_engineer_id in eng_buckets:
             b = eng_buckets[t.assigned_engineer_id]
             b["assigned"] += 1
