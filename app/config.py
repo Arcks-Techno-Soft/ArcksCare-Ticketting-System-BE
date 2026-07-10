@@ -106,6 +106,25 @@ class Settings(BaseSettings):
     customer_sign_url_base: str = Field(default="http://localhost:3000")
     customer_sign_token_ttl_days: int = Field(default=30)
 
+    # --- SLA reminder scheduler (looping WhatsApp reminders) ---------------
+    # Master switch. Off by default so the app boots unchanged; set
+    # REMINDER_SCHEDULER_ENABLED=true in the environment to turn it on.
+    reminder_scheduler_enabled: bool = Field(default=False)
+    # How often the background loop wakes up to check for due reminders (sec).
+    # Keep well below the smallest reminder interval so reminders fire on time.
+    reminder_tick_seconds: int = Field(default=120)
+    # Max reminders sent per ticket per stage before it goes quiet (the cap).
+    reminder_cap: int = Field(default=5)
+    # Per-stage cadence, in minutes.
+    reminder_ack_interval_minutes: int = Field(default=10)      # OPEN -> not acknowledged
+    reminder_assign_interval_minutes: int = Field(default=10)   # ACKNOWLEDGED -> not assigned
+    reminder_accept_interval_minutes: int = Field(default=30)   # ASSIGNED -> not accepted
+    # Optional approved content-template SID for reminder messages (required for
+    # a production WhatsApp sender to reach staff outside the 24h session
+    # window). Its {{1}}..{{4}} vars must be: stage-line, ref, where, link.
+    # Blank -> plain-text body (works with the Twilio Sandbox).
+    twilio_reminder_content_sid: str = Field(default="")
+
     @field_validator("cors_origins")
     @classmethod
     def _strip_origins(cls, v: str) -> str:

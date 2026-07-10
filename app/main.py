@@ -68,6 +68,7 @@ def _bootstrap_db() -> None:
     """
     # Import models so SQLAlchemy registers them on Base.metadata.
     from .models import ticket as _t  # noqa: F401
+    from .models import ticket_reminder as _tr  # noqa: F401
     from .models import user as _u  # noqa: F401
     from .models import spare as _s  # noqa: F401
     from .models import installation as _i  # noqa: F401
@@ -151,6 +152,12 @@ def _bootstrap_db() -> None:
             seed_sample_tickets(db)
             seed_district_test_data(db)
             seed_demo_tickets(db)
+
+    # Start the looping SLA reminder scheduler (no-op unless
+    # REMINDER_SCHEDULER_ENABLED=true). Runs in a daemon thread; see
+    # services/reminders.py.
+    from .services.reminders import start_reminder_scheduler
+    start_reminder_scheduler()
 
 
 @app.get("/")
