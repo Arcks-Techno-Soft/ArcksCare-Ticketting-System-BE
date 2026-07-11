@@ -31,6 +31,7 @@ from ..schemas.installation import (
     InstallationSalesRepUpdate,
 )
 from ..services.auth import get_current_user, require_role
+from ..services.installation_notify import notify_sales_rep_assigned
 from ..services.installation_signing import (
     record_customer_signature_via_engineer,
     record_engineer_signature,
@@ -242,6 +243,11 @@ def create_installation(
     if body.assigned_engineer_id is not None:
         inst, _ = assign(db, inst, user, body.assigned_engineer_id)
 
+    # Notify the credited sales rep on WhatsApp — unless they credited
+    # themselves (a SALES user opening their own installation).
+    if inst.sales_rep_id is not None and inst.sales_rep_id != user.id:
+        notify_sales_rep_assigned(inst.id)
+
     logger.info(
         "Installation %s created by %s for %s",
         inst.reference, user.username, inst.business_name,
@@ -325,6 +331,7 @@ def update_sales_rep_endpoint(
     """Set, change, or clear the credited sales rep. Admin / Manager only."""
     _require_owner_or_manager(user)
     inst = _load(db, reference)
+    prev_rep_id = inst.sales_rep_id
     if body.sales_rep_id is None:
         inst.sales_rep_id = None
     else:
@@ -334,6 +341,14 @@ def update_sales_rep_endpoint(
         inst.sales_rep_id = rep.id
     db.commit()
     db.refresh(inst)
+    # Notify only when a (new, different) rep was actually credited, and not
+    # when a manager credits themselves.
+    if (
+        inst.sales_rep_id is not None
+        and inst.sales_rep_id != prev_rep_id
+        and inst.sales_rep_id != user.id
+    ):
+        notify_sales_rep_assigned(inst.id)
     return inst
 
 

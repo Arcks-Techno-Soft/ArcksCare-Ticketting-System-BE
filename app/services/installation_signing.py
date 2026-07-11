@@ -183,6 +183,16 @@ def record_engineer_signature(
         "Engineer signed + PDF generated for installation %s",
         installation.reference,
     )
+    # Notify the credited sales rep on WhatsApp that their installation closed.
+    # Fire-and-forget (own thread + DB session); imported locally to avoid any
+    # import cycle. Guarded so it only fires on the NEW -> CLOSED transition.
+    if (
+        installation.status == InstallationStatus.CLOSED.value
+        and prev != InstallationStatus.CLOSED.value
+    ):
+        from .installation_notify import notify_sales_rep_closed
+
+        notify_sales_rep_closed(installation.id)
     return resolution
 
 

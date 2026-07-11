@@ -124,6 +124,11 @@ class Settings(BaseSettings):
     # window). Its {{1}}..{{4}} vars must be: stage-line, ref, where, link.
     # Blank -> plain-text body (works with the Twilio Sandbox).
     twilio_reminder_content_sid: str = Field(default="")
+    # Approved content-template SIDs for the sales-rep installation alerts.
+    # {{1}}..{{3}} vars for both = rep name, installation reference, customer.
+    # Blank -> plain-text body (Sandbox only).
+    twilio_install_assign_content_sid: str = Field(default="")
+    twilio_install_closed_content_sid: str = Field(default="")
 
     @field_validator("cors_origins")
     @classmethod
