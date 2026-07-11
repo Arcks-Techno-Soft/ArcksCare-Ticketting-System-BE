@@ -99,10 +99,15 @@ class TicketCreate(BaseModel):
     latitude: Optional[float] = Field(default=None, ge=-90, le=90)
     longitude: Optional[float] = Field(default=None, ge=-180, le=180)
 
-    product_category: ProductCategory
+    # Free text (not enum-validated): the form offers ProductCategory as
+    # suggestions, but someone who picks "Other" types their own product
+    # category, stored here verbatim. Mirrors business_type.
+    product_category: str = Field(min_length=2, max_length=60)
     serial_number: str = Field(min_length=3, max_length=120)
 
-    issue_category: IssueCategory
+    # Free text (not enum-validated): the form offers IssueCategory as
+    # suggestions; an "Other" pick sends the typed category, stored verbatim.
+    issue_category: str = Field(min_length=2, max_length=80)
     severity: SeverityIn = SeverityIn.MEDIUM
     description: str = Field(min_length=20, max_length=4000)
     preferred_contact_time: Optional[str] = Field(default=None, max_length=60)
@@ -113,6 +118,22 @@ class TicketCreate(BaseModel):
         v = v.strip()
         if len(v) < 2:
             raise ValueError("Tell us your business category")
+        return v
+
+    @field_validator("product_category")
+    @classmethod
+    def _clean_product_category(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 2:
+            raise ValueError("Tell us the product category")
+        return v
+
+    @field_validator("issue_category")
+    @classmethod
+    def _clean_issue_category(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 2:
+            raise ValueError("Tell us the issue category")
         return v
 
     @field_validator("phone")

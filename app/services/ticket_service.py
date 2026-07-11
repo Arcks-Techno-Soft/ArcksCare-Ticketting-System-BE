@@ -133,9 +133,11 @@ def create_ticket(
         pincode=payload.pincode,
         latitude=payload.latitude,
         longitude=payload.longitude,
-        product_category=payload.product_category.value,
+        # product_category / issue_category are free strings now (suggested from
+        # the enum lists, but "Other" lets the user type a custom value).
+        product_category=payload.product_category,
         serial_number=payload.serial_number,
-        issue_category=payload.issue_category.value,
+        issue_category=payload.issue_category,
         severity=payload.severity.value,
         description=payload.description.strip(),
         preferred_contact_time=(payload.preferred_contact_time or "").strip() or None,
