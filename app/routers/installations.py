@@ -109,6 +109,10 @@ def list_installations(
     status: Optional[str] = Query(default=None),
     search: Optional[str] = Query(default=None),
     created_within_days: Optional[int] = Query(default=None, ge=1, le=3650),
+    # Narrow to one assignee's installations. Mirrors the ticket inbox param so a
+    # Manager/Admin can count installations assigned to *them* (e.g. for the
+    # "waiting on me" tab badge) without being scoped like an engineer.
+    assigned_engineer_id: Optional[int] = Query(default=None, ge=1),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -129,6 +133,8 @@ def list_installations(
         )
     if status:
         q = q.filter(Installation.status == status.upper())
+    if assigned_engineer_id:
+        q = q.filter(Installation.assigned_engineer_id == assigned_engineer_id)
     if created_within_days:
         cutoff = datetime.now(timezone.utc) - timedelta(days=created_within_days)
         q = q.filter(Installation.created_at >= cutoff)

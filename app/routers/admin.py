@@ -269,12 +269,19 @@ def list_engineers(
     current open workload (open tickets + pending installations) so the UI can
     recommend the least-busy ones.
 
+    Managers are included too: they sometimes work complaints/installations
+    themselves, so Admin/Owner and Managers may assign to a Manager as well as
+    an Engineer. (Admin/Owner accounts are deliberately NOT listed — they are
+    not assignable.) The assignee write path and the engineer workflow already
+    accept any active user regardless of role, so a Manager can accept/resolve
+    a ticket assigned to them.
+
     When `include_sales_reps` is set, active SALES-role users are returned too
     (each carrying role="SALES") so Admin/Manager can assign service calls and
-    installations to a sales rep as well as an engineer. Workload counts are
-    keyed on `assigned_engineer_id`, so a sales rep's count reflects work
+    installations to a sales rep as well. Workload counts are keyed on
+    `assigned_engineer_id`, so a manager's or sales rep's count reflects work
     assigned to them just like an engineer's."""
-    roles = [UserRole.ENGINEER.value]
+    roles = [UserRole.ENGINEER.value, UserRole.MANAGER.value]
     if include_sales_reps:
         roles.append(UserRole.SALES.value)
     engineers = (
