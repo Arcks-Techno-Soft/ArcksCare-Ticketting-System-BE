@@ -21,7 +21,7 @@ from ..models.spare import SpareCatalog, TicketSpare
 from ..models.sub_engineer import SubEngineer, SubEngineerRoster
 from ..models.ticket import ServiceType, Severity, Ticket, TicketEvent, TicketStatus, WorkNote
 from ..models.ticket_engineer import TicketEngineer
-from ..models.user import User, UserRole
+from ..models.user import User, UserRole, ADMIN_MANAGER_ROLES, ADMIN_ROLES, SUPER_ADMIN_ROLES
 from ..schemas.auth import (
     EngineerOption,
     AddSubEngineerRequest,
@@ -53,6 +53,7 @@ from ..schemas.auth import (
     UpdateTicketSpareRequest,
     UnregisterPushTokenRequest,
     UpdateUserActiveRequest,
+    UpdateUserRoleRequest,
     UpdateUserSalesRepRequest,
     UpdateWarrantyRequest,
     UserOut,
@@ -144,7 +145,7 @@ def unregister_push_token(
 @router.get("/users", response_model=List[UserOut])
 def list_users(
     db: Session = Depends(get_db),
-    _user: User = Depends(require_role(UserRole.ADMIN)),
+    _user: User = Depends(require_role(UserRole.SUPER_ADMIN)),
 ):
     """All staff accounts — Admin only."""
     return db.query(User).order_by(User.created_at.desc()).all()
@@ -154,7 +155,7 @@ def list_users(
 def create_user(
     body: CreateUserRequest,
     db: Session = Depends(get_db),
-    _user: User = Depends(require_role(UserRole.ADMIN)),
+    _user: User = Depends(require_role(UserRole.SUPER_ADMIN)),
 ):
     """Create a new Admin (Manager) or Engineer account.
 
@@ -200,7 +201,7 @@ def set_user_active(
     user_id: int,
     body: UpdateUserActiveRequest,
     db: Session = Depends(get_db),
-    actor: User = Depends(require_role(UserRole.ADMIN)),
+    actor: User = Depends(require_role(UserRole.SUPER_ADMIN)),
 ):
     """Activate or deactivate a user. Admins can't deactivate themselves."""
     target = db.query(User).filter(User.id == user_id).one_or_none()
@@ -219,7 +220,7 @@ def set_user_sales_rep(
     user_id: int,
     body: UpdateUserSalesRepRequest,
     db: Session = Depends(get_db),
-    _actor: User = Depends(require_role(UserRole.ADMIN)),
+    _actor: User = Depends(require_role(UserRole.SUPER_ADMIN)),
 ):
     """Flag/unflag a user as a sales rep (creditable on installations),
     independent of their role. Admin only."""
@@ -229,6 +230,49 @@ def set_user_sales_rep(
     target.is_sales_rep = bool(body.is_sales_rep)
     db.commit()
     db.refresh(target)
+    return target
+
+
+@router.patch("/users/{user_id}/role", response_model=UserOut)
+def set_user_role(
+    user_id: int,
+    body: UpdateUserRoleRequest,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_role(UserRole.SUPER_ADMIN)),
+):
+    """Change a user's role. Super-Admin-only — this is how Admins are promoted
+    or demoted (and roles reassigned generally) without touching the DB.
+
+    Guardrails:
+      - A Super Admin can't demote themselves out of Super Admin (avoids the
+        last owner locking themselves out of the reserved powers).
+    """
+    target = db.query(User).filter(User.id == user_id).one_or_none()
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    new_role = body.role
+    if target.id == actor.id and new_role not in SUPER_ADMIN_ROLES:
+        raise HTTPException(
+            status_code=400,
+            detail="You cannot remove your own Super Admin role.",
+        )
+
+    prev_role = target.role
+    target.role = new_role
+    # District only applies to engineers; clear it when leaving that role so a
+    # promoted engineer doesn't keep a stale district on their profile.
+    if new_role != UserRole.ENGINEER.value:
+        target.district = None
+    # SALES-role users are always creditable as sales reps.
+    if new_role == UserRole.SALES.value:
+        target.is_sales_rep = True
+    db.commit()
+    db.refresh(target)
+    logger.info(
+        "SUPER_ADMIN %s changed role of %s: %s -> %s",
+        actor.username, target.username, prev_role, new_role,
+    )
     return target
 
 
@@ -609,7 +653,7 @@ def self_assign_ticket(
 ):
     """Admin/Manager assigns the ticket to themselves. Convenience wrapper
     around /assign with engineer_id = current_user.id."""
-    if user.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
+    if user.role not in ADMIN_MANAGER_ROLES:
         raise HTTPException(status_code=403, detail="Only Manager or Admin can self-assign")
     ticket = _load_ticket(db, reference, user)
     ticket, _ = assign_engineer(db, ticket, user, user.id)
@@ -657,7 +701,7 @@ def remove_ticket_engineer(
 def close_preview(
     reference: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role(UserRole.ADMIN)),
+    user: User = Depends(require_role(UserRole.SUPER_ADMIN)),
 ):
     """Summary + 'what's still pending' shown before an Admin/Owner force-closes."""
     ticket = _load_ticket(db, reference, user)
@@ -671,7 +715,7 @@ def force_close_ticket(
     reference: str,
     body: ForceCloseRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role(UserRole.ADMIN)),
+    user: User = Depends(require_role(UserRole.SUPER_ADMIN)),
 ):
     """Admin/Owner override: close a ticket from ANY status (reason required)."""
     ticket = _load_ticket(db, reference, user)
@@ -696,7 +740,7 @@ def delete_ticket(
     reference: str,
     body: Optional[DeleteTicketRequest] = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role(UserRole.ADMIN)),
+    user: User = Depends(require_role(UserRole.SUPER_ADMIN)),
 ):
     """Admin/Owner override: soft-delete a ticket in ANY status. The row is
     retained (hidden everywhere) for audit/recovery."""
@@ -914,7 +958,7 @@ def get_resolution_pdf_url(
     """
     ticket = _load_ticket(db, reference, user)
     if (
-        user.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
+        user.role not in ADMIN_MANAGER_ROLES
         and ticket.assigned_engineer_id != user.id
     ):
         raise HTTPException(
@@ -958,7 +1002,7 @@ def regenerate_resolution_pdf(
 
     from ..services.pdf_generator import generate_resolution_pdf  # avoid module-load cost when unused
 
-    if user.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
+    if user.role not in ADMIN_MANAGER_ROLES:
         raise HTTPException(status_code=403, detail="Manager or Admin only")
     ticket = _load_ticket(db, reference, user)
     res = ticket.resolution
@@ -1041,7 +1085,7 @@ async def add_note(
 
 def _can_manage_sub_engineers(ticket: Ticket, user: User) -> bool:
     """Admin, Manager, or the current assignee can manage sub-engineers."""
-    if user.role in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
+    if user.role in ADMIN_MANAGER_ROLES:
         return True
     return ticket.assigned_engineer_id == user.id
 
@@ -1408,7 +1452,7 @@ def _can_manage_spares(ticket: Ticket, user: User) -> bool:
     """
     if ticket.status != "RESOLVING":
         return False
-    if user.role in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
+    if user.role in ADMIN_MANAGER_ROLES:
         return True
     return ticket.assigned_engineer_id == user.id
 
@@ -1577,13 +1621,13 @@ def update_service_fee(
     # who can edit charges may set it at/above that floor; only an Admin (the
     # "owner") may go below it (a waiver/discount).
     min_fee = oow_min_service_fee_inr(ticket)
-    is_owner = user.role in (UserRole.ADMIN.value, UserRole.OWNER.value)
-    if new_fee < min_fee and not is_owner:
+    is_super_admin = user.role in SUPER_ADMIN_ROLES
+    if new_fee < min_fee and not is_super_admin:
         raise HTTPException(
             status_code=422,
             detail=(
                 f"Service charge can't be below ₹{min_fee} for this ticket. "
-                "Only an Admin can set a lower amount."
+                "Only a Super Admin can set a lower amount."
             ),
         )
     ticket.service_fee_inr = new_fee
@@ -1602,7 +1646,7 @@ def _can_ship_parts(ticket: Ticket, user: User) -> bool:
     """
     if ticket.status == "CLOSED":
         return False
-    if user.role in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
+    if user.role in ADMIN_MANAGER_ROLES:
         return True
     return ticket.assigned_engineer_id == user.id
 

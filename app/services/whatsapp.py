@@ -32,7 +32,7 @@ import httpx
 from ..config import get_settings
 from ..database import SessionLocal
 from ..models.ticket import Ticket
-from ..models.user import User, UserRole
+from ..models.user import User, UserRole, ADMIN_MANAGER_ROLES, ADMIN_ROLES, SUPER_ADMIN_ROLES
 
 logger = logging.getLogger("skposcare.whatsapp")
 
@@ -51,7 +51,7 @@ def _staff_phones(db) -> list[tuple[str, str]]:
     """Return ``[(phone, display_name), …]`` for every active ADMIN / MANAGER."""
     users = (
         db.query(User)
-        .filter(User.role.in_([UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value]))
+        .filter(User.role.in_(ADMIN_MANAGER_ROLES))
         .filter(User.active.is_(True))
         .all()
     )

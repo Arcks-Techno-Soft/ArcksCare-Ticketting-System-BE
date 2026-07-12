@@ -30,7 +30,7 @@ from ..models.ticket import (
     WarrantyStatus,
     WorkNote,
 )
-from ..models.user import User, UserRole
+from ..models.user import User, UserRole, ADMIN_MANAGER_ROLES, ADMIN_ROLES, SUPER_ADMIN_ROLES
 from .spares import oow_min_service_fee_inr
 
 logger = logging.getLogger("skposcare.workflow")
@@ -96,7 +96,7 @@ def _require_status(ticket: Ticket, allowed: set[str]) -> None:
 
 def acknowledge(db: Session, ticket: Ticket, actor: User) -> Ticket:
     """OPEN → ACKNOWLEDGED. Manager/Admin only."""
-    if actor.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
+    if actor.role not in ADMIN_MANAGER_ROLES:
         raise HTTPException(status_code=403, detail="Only Manager or Admin can acknowledge")
     _require_status(ticket, {TicketStatus.OPEN.value})
     prev = ticket.status
@@ -122,7 +122,7 @@ def assign_engineer(db: Session, ticket: Ticket, actor: User, engineer_id: int) 
 
     Returns (ticket, assignee) so the caller can fire a notification email.
     """
-    if actor.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
+    if actor.role not in ADMIN_MANAGER_ROLES:
         raise HTTPException(status_code=403, detail="Only Manager or Admin can assign")
 
     engineer = db.query(User).filter(User.id == engineer_id).one_or_none()
@@ -217,7 +217,7 @@ def add_engineer(
     """
     from ..models.ticket_engineer import TicketEngineer  # local import: load order
 
-    if actor.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
+    if actor.role not in ADMIN_MANAGER_ROLES:
         raise HTTPException(status_code=403, detail="Only Manager or Admin can add an engineer")
 
     # A primary engineer must already be assigned — additional engineers are
@@ -277,7 +277,7 @@ def remove_engineer(db: Session, ticket: Ticket, actor: User, engineer_id: int) 
     """
     from ..models.ticket_engineer import TicketEngineer  # local import: load order
 
-    if actor.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
+    if actor.role not in ADMIN_MANAGER_ROLES:
         raise HTTPException(status_code=403, detail="Only Manager or Admin can remove an engineer")
 
     link = (
@@ -308,9 +308,15 @@ def remove_engineer(db: Session, ticket: Ticket, actor: User, engineer_id: int) 
 
 # --------------------------- admin overrides ---------------------------- #
 
-def _require_admin_or_owner(actor: User, action: str) -> None:
-    if actor.role not in (UserRole.ADMIN.value, UserRole.OWNER.value):
-        raise HTTPException(status_code=403, detail=f"Only Owner or Admin can {action}")
+def _require_super_admin(actor: User, action: str) -> None:
+    """Reserved super-admin-only actions (force-close, delete). Plain Admins are
+    intentionally excluded — only a Super Admin (or legacy Owner) may do these."""
+    if actor.role not in SUPER_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail=f"Only a Super Admin can {action}")
+
+
+# Back-compat alias in case other modules imported the old name.
+_require_admin_or_owner = _require_super_admin
 
 
 def payment_required(ticket: Ticket) -> bool:
@@ -389,7 +395,7 @@ def compute_close_pending(ticket: Ticket) -> list[str]:
 def force_close(db: Session, ticket: Ticket, actor: User, reason: str) -> Ticket:
     """Admin/Owner override: move a ticket to CLOSED from ANY status, skipping
     signatures/PDF. A reason is required and recorded for audit."""
-    _require_admin_or_owner(actor, "close a ticket")
+    _require_super_admin(actor, "close a ticket")
     reason = (reason or "").strip()
     if not reason:
         raise HTTPException(status_code=400, detail="A reason is required to close the ticket.")
@@ -420,9 +426,7 @@ def collect_payment(db: Session, ticket: Ticket, actor: User, amount_inr: int) -
     payment closes it immediately. If the engineer hasn't signed off yet, this
     just marks payment collected — the ticket then closes at sign-off.
     """
-    is_staff = actor.role in (
-        UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value
-    )
+    is_staff = actor.role in ADMIN_MANAGER_ROLES
     if not (is_staff or ticket.assigned_engineer_id == actor.id):
         raise HTTPException(
             status_code=403,
@@ -517,7 +521,7 @@ def collect_payment(db: Session, ticket: Ticket, actor: User, amount_inr: int) -
 def soft_delete_ticket(db: Session, ticket: Ticket, actor: User, reason: str) -> Ticket:
     """Admin/Owner override: soft-delete a ticket in ANY status. The row is
     retained (with deleted_at / deleted_by) but hidden everywhere."""
-    _require_admin_or_owner(actor, "delete a ticket")
+    _require_super_admin(actor, "delete a ticket")
     if ticket.deleted_at is not None:
         raise HTTPException(status_code=409, detail="Ticket is already deleted.")
 
@@ -835,7 +839,7 @@ def resolve(db: Session, ticket: Ticket, actor: User, summary: str) -> tuple[Tic
 
 def update_severity(db: Session, ticket: Ticket, actor: User, new_severity: str) -> Ticket:
     """Admin/Manager-only. Allowed at any status — triage can happen anytime."""
-    if actor.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
+    if actor.role not in ADMIN_MANAGER_ROLES:
         raise HTTPException(status_code=403, detail="Only Manager or Admin can set severity")
     if new_severity not in {s.value for s in Severity}:
         raise HTTPException(status_code=400, detail=f"Invalid severity: {new_severity}")
@@ -867,7 +871,7 @@ def _maybe_seed_oow_min_fee(ticket: Ticket) -> None:
 
 def update_warranty(db: Session, ticket: Ticket, actor: User, new_status: str) -> Ticket:
     """Admin or Manager can update warranty at any status."""
-    if actor.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
+    if actor.role not in ADMIN_MANAGER_ROLES:
         raise HTTPException(status_code=403, detail="Only Manager or Admin can update warranty")
     if new_status not in {w.value for w in WarrantyStatus}:
         raise HTTPException(status_code=400, detail=f"Invalid warranty status: {new_status}")
@@ -903,7 +907,7 @@ def set_service_type(db: Session, ticket: Ticket, actor: User, new_type: str) ->
     decided whether signatures/PDF were required, so changing it would be
     inconsistent with the finalised record.
     """
-    is_staff = actor.role in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
+    is_staff = actor.role in ADMIN_MANAGER_ROLES
     if not is_staff and ticket.assigned_engineer_id != actor.id:
         raise HTTPException(
             status_code=403,
@@ -953,7 +957,7 @@ def set_third_party_info(
     (enforced at sign-off / compute_close_pending); this endpoint just records
     them and doesn't itself require them so the engineer can save progressively.
     """
-    is_staff = actor.role in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
+    is_staff = actor.role in ADMIN_MANAGER_ROLES
     if not is_staff and ticket.assigned_engineer_id != actor.id:
         raise HTTPException(
             status_code=403,

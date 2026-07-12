@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from ..database import SessionLocal
 from ..models.push_token import DevicePushToken
-from ..models.user import User, UserRole
+from ..models.user import User, UserRole, ADMIN_MANAGER_ROLES, ADMIN_ROLES, SUPER_ADMIN_ROLES
 
 logger = logging.getLogger("skposcare.push")
 
@@ -114,7 +114,7 @@ def notify_new_ticket(ticket_id: int) -> None:
         staff_ids = db.execute(
             select(User.id).where(
                 User.active.is_(True),
-                User.role.in_([UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value]),
+                User.role.in_(ADMIN_MANAGER_ROLES),
             )
         ).scalars().all()
         tokens = _tokens_for_users(db, staff_ids)

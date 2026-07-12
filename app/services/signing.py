@@ -19,7 +19,7 @@ from ..config import get_settings
 from ..models.resolution import Resolution, ResolutionMedia
 from ..models.shipment import TicketShipment
 from ..models.ticket import PaymentStatus, ServiceType, Ticket, TicketStatus, WarrantyStatus
-from ..models.user import User, UserRole
+from ..models.user import User, UserRole, ADMIN_MANAGER_ROLES, ADMIN_ROLES, SUPER_ADMIN_ROLES
 from .pdf_generator import generate_resolution_pdf
 from .storage import get_storage
 from .ticket_workflow import _log_event, payment_blocks_close
@@ -314,7 +314,7 @@ def generate_field_sign_link(
     """
     _reject_if_remote(ticket)
     if (
-        actor.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
+        actor.role not in ADMIN_MANAGER_ROLES
         and ticket.assigned_engineer_id != actor.id
     ):
         raise HTTPException(

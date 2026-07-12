@@ -15,19 +15,32 @@ from ..database import Base
 
 
 class UserRole(str, Enum):
-    ADMIN = "ADMIN"          # full access, can edit warranty, close tickets, manage team
+    SUPER_ADMIN = "SUPER_ADMIN"  # top tier (was OWNER). Full access PLUS the
+                                 # reserved powers: manage users/roles, delete &
+                                 # force-close tickets, waive charges below the min.
+    ADMIN = "ADMIN"          # full access EXCEPT the reserved super-admin powers
     MANAGER = "MANAGER"      # can acknowledge + assign + download PDFs
     ENGINEER = "ENGINEER"    # can accept, add work notes, mark resolved (on own tickets)
     SALES = "SALES"          # field sales rep — raises tickets/installations; gets
                              # credited as the sales rep on installations they source.
-    # Legacy alias: pre-rename accounts still carry role "OWNER". It is treated
-    # as ADMIN everywhere (see require_role + ADMIN_ROLE_VALUES) until those rows
-    # are migrated to ADMIN. TODO: remove once no OWNER rows remain.
+    # DEPRECATED legacy alias: pre-rename accounts carried role "OWNER". It is
+    # treated as SUPER_ADMIN everywhere until those rows are migrated. Kept so a
+    # not-yet-migrated OWNER row is never locked out mid-deploy.
+    # TODO: remove once no OWNER rows remain (see scripts/migrate_owner_to_super_admin).
     OWNER = "OWNER"
 
 
-# Admin-level role values. OWNER is a legacy alias for ADMIN.
-ADMIN_ROLE_VALUES = (UserRole.ADMIN.value, UserRole.OWNER.value)
+# --- Authorization tiers (single source of truth) -----------------------
+# SUPER_ADMIN sits above ADMIN. Legacy OWNER is folded into SUPER_ADMIN so an
+# un-migrated owner keeps full access. Each tier INCLUDES the ones above it.
+SUPER_ADMIN_ROLES = (UserRole.SUPER_ADMIN.value, UserRole.OWNER.value)
+# "Admin-level" = plain Admin plus everyone above (Super Admin / legacy Owner).
+ADMIN_ROLES = (UserRole.ADMIN.value,) + SUPER_ADMIN_ROLES
+# "Admin or Manager level" — the common gate for assign/acknowledge/etc.
+ADMIN_MANAGER_ROLES = ADMIN_ROLES + (UserRole.MANAGER.value,)
+
+# Back-compat alias (was: ADMIN + OWNER). Now admin-level = ADMIN + SUPER_ADMIN.
+ADMIN_ROLE_VALUES = ADMIN_ROLES
 
 
 class User(Base):

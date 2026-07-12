@@ -137,9 +137,14 @@ def get_optional_user(
 def require_role(*allowed: UserRole):
     """Dependency factory: only lets through users whose role is in `allowed`."""
     allowed_values = {r.value for r in allowed}
-    # Legacy compatibility: OWNER is an alias for ADMIN. Any endpoint that
-    # allows ADMIN also allows OWNER, until OWNER rows are migrated to ADMIN.
+    # Tier inheritance: a Super Admin can reach every endpoint an Admin can, so
+    # any endpoint allowing ADMIN also allows SUPER_ADMIN. (The reverse is NOT
+    # true — endpoints gated to SUPER_ADMIN only stay closed to plain Admins.)
     if UserRole.ADMIN.value in allowed_values:
+        allowed_values.add(UserRole.SUPER_ADMIN.value)
+    # Legacy compatibility: pre-rename OWNER rows/tokens are treated as
+    # SUPER_ADMIN until migrated, so an un-migrated owner is never locked out.
+    if UserRole.SUPER_ADMIN.value in allowed_values:
         allowed_values.add(UserRole.OWNER.value)
 
     def _checker(user: User = Depends(get_current_user)) -> User:
@@ -198,9 +203,9 @@ def seed_initial_users(db: Session) -> None:
     # (username, password, first_name, last_name, role)
     seeds = [
         (settings.seed_owner_username, settings.seed_owner_password,
-         settings.seed_owner_name.split(" ")[0] if settings.seed_owner_name else "Admin",
-         " ".join(settings.seed_owner_name.split(" ")[1:]) if settings.seed_owner_name and " " in settings.seed_owner_name else "",
-         UserRole.ADMIN.value),
+         settings.seed_owner_name.split(" ")[0] if settings.seed_owner_name else "Super",
+         " ".join(settings.seed_owner_name.split(" ")[1:]) if settings.seed_owner_name and " " in settings.seed_owner_name else "Admin",
+         UserRole.SUPER_ADMIN.value),
         (settings.seed_manager_username, settings.seed_manager_password,
          settings.seed_manager_name.split(" ")[0] if settings.seed_manager_name else "Manager",
          " ".join(settings.seed_manager_name.split(" ")[1:]) if settings.seed_manager_name and " " in settings.seed_manager_name else "",

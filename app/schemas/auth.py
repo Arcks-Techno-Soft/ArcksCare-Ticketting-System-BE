@@ -51,8 +51,9 @@ class CreateUserRequest(BaseModel):
     # URLs and logs without escaping.
     username: str = Field(min_length=3, max_length=50, pattern=r"^[a-z0-9._-]+$")
     password: str = Field(min_length=8, max_length=200)
-    # Accepted: "MANAGER" (admin-tier), "ENGINEER", or "SALES".
-    role: str = Field(pattern=r"^(MANAGER|ENGINEER|SALES)$")
+    # Creating users is a Super-Admin-only action, so any tier may be created,
+    # including ADMIN and (another) SUPER_ADMIN.
+    role: str = Field(pattern=r"^(SUPER_ADMIN|ADMIN|MANAGER|ENGINEER|SALES)$")
     # District an Engineer covers — used to match incoming tickets by city.
     # Optional; only meaningful for ENGINEER accounts.
     district: Optional[str] = Field(default=None, max_length=80)
@@ -78,6 +79,12 @@ class UpdateUserActiveRequest(BaseModel):
 
 class UpdateUserSalesRepRequest(BaseModel):
     is_sales_rep: bool
+
+
+class UpdateUserRoleRequest(BaseModel):
+    # Change a user's role. Super-Admin-only action (see the endpoint), so any
+    # tier is assignable.
+    role: str = Field(pattern=r"^(SUPER_ADMIN|ADMIN|MANAGER|ENGINEER|SALES)$")
 
 
 class RegisterPushTokenRequest(BaseModel):

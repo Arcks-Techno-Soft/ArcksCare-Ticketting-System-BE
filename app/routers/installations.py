@@ -16,7 +16,7 @@ from ..models.installation import (
     InstallationNote,
     InstallationStatus,
 )
-from ..models.user import User, UserRole
+from ..models.user import User, UserRole, ADMIN_MANAGER_ROLES, ADMIN_ROLES, SUPER_ADMIN_ROLES
 from ..schemas.installation import (
     InstallationAddressUpdate,
     InstallationAssignRequest,
@@ -61,7 +61,7 @@ def _is_sales_eligible(user: User) -> bool:
 
 
 def _require_owner_or_manager(user: User) -> None:
-    if user.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
+    if user.role not in ADMIN_MANAGER_ROLES:
         raise HTTPException(status_code=403, detail="Only Admin or Manager can do this")
 
 
@@ -193,7 +193,7 @@ def create_installation(
     self-assign by own id) and credit a sales rep."""
     # Only Admin/Manager can pre-assign an engineer or credit a sales rep on
     # creation — engineers' and sales' installations go to the admin queue.
-    if user.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
+    if user.role not in ADMIN_MANAGER_ROLES:
         body.assigned_engineer_id = None
         # A SALES user opening their own installation is credited as the rep.
         body.sales_rep_id = user.id if user.role == UserRole.SALES.value else None
@@ -542,7 +542,7 @@ def installation_pdf(
     assigned to (mirrors the ticket resolution PDF)."""
     inst = _load(db, reference)
     if (
-        user.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
+        user.role not in ADMIN_MANAGER_ROLES
         and inst.assigned_engineer_id != user.id
     ):
         raise HTTPException(

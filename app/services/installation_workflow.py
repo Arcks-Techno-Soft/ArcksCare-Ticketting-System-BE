@@ -22,7 +22,7 @@ from ..models.installation import (
     InstallationNote,
     InstallationStatus,
 )
-from ..models.user import User, UserRole
+from ..models.user import User, UserRole, ADMIN_MANAGER_ROLES, ADMIN_ROLES, SUPER_ADMIN_ROLES
 
 logger = logging.getLogger("skposcare.installation_workflow")
 
@@ -218,7 +218,7 @@ def _require_assignee(installation: Installation, actor: User) -> None:
 
 def assign(db: Session, installation: Installation, actor: User, engineer_id: int) -> tuple[Installation, User]:
     """Assign or reassign. Admin/Manager only. Allowed in NEW or ASSIGNED."""
-    if actor.role not in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value):
+    if actor.role not in ADMIN_MANAGER_ROLES:
         raise HTTPException(status_code=403, detail="Only Manager or Admin can assign")
 
     engineer = db.query(User).filter(User.id == engineer_id).one_or_none()
@@ -272,7 +272,7 @@ def add_note(
     from ..models.installation import InstallationNoteAttachment  # local
 
     can_add = (
-        actor.role in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
+        actor.role in ADMIN_MANAGER_ROLES
         or installation.assigned_engineer_id == actor.id
     )
     if not can_add:
@@ -330,7 +330,7 @@ def update_invoice(
     signed off and baked into the generated PDF).
     """
     can_edit = (
-        actor.role in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
+        actor.role in ADMIN_MANAGER_ROLES
         or installation.assigned_engineer_id == actor.id
     )
     if not can_edit:
@@ -369,7 +369,7 @@ def update_invoice(
 def _require_invoice_doc_editor(installation: Installation, actor: User) -> None:
     """Same gate as the invoice number: assignee / Admin / Manager, before CLOSED."""
     can_edit = (
-        actor.role in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
+        actor.role in ADMIN_MANAGER_ROLES
         or installation.assigned_engineer_id == actor.id
     )
     if not can_edit:
@@ -453,7 +453,7 @@ def update_address(
     pincode, latitude, longitude); blank optional fields arrive as None.
     """
     can_edit = (
-        actor.role in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
+        actor.role in ADMIN_MANAGER_ROLES
         or installation.assigned_engineer_id == actor.id
     )
     if not can_edit:
@@ -492,7 +492,7 @@ def update_address(
 def _can_work(installation: Installation, actor: User) -> bool:
     """Assignee, Admin, Manager or Owner may run attempts / notes."""
     return (
-        actor.role in (UserRole.ADMIN.value, UserRole.OWNER.value, UserRole.MANAGER.value)
+        actor.role in ADMIN_MANAGER_ROLES
         or installation.assigned_engineer_id == actor.id
     )
 
