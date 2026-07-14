@@ -981,6 +981,54 @@ def get_resolution_pdf_url(
     }
 
 
+def _rerender_resolution_pdf(db: Session, ticket: Ticket) -> bool:
+    """Re-render the stored resolution PDF from the ticket's current figures.
+
+    No-op (returns False) unless the ticket already has a fully-signed PDF —
+    during RESOLVING there is nothing rendered yet, and we never replace a
+    signed PDF with a draft-looking one.
+    """
+    from datetime import datetime, timezone
+
+    from ..services.pdf_generator import generate_resolution_pdf
+
+    res = ticket.resolution
+    if res is None or res.customer_signed_at is None or res.engineer_signed_at is None:
+        return False
+
+    pdf_bytes = generate_resolution_pdf(ticket, res)
+    storage = get_storage()
+    filename = f"resolution-{ticket.reference}.pdf"
+    meta = storage.save_bytes(pdf_bytes, "application/pdf", ticket.reference, filename)
+    res.pdf_storage_key = meta["storage_url"]
+    res.pdf_generated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(res)
+    return True
+
+
+def _sync_charges_pdf(db: Session, ticket: Ticket, user: User) -> None:
+    """Keep the signed resolution PDF in step with a post-signature charge edit.
+
+    The invoice figures are baked into the PDF at sign-off, so a Super Admin
+    correcting them afterwards would otherwise leave the customer holding a
+    document that disagrees with the system. Best-effort: the charge edit is
+    already committed, so a rendering/storage failure must not 500 the request
+    — log it and leave the stale PDF for a manual /pdf/regenerate.
+    """
+    try:
+        if _rerender_resolution_pdf(db, ticket):
+            logger.info(
+                "Re-rendered PDF for %s after charge edit by %s",
+                ticket.reference, user.username,
+            )
+    except Exception:  # noqa: BLE001 - never fail the charge edit on a PDF error
+        logger.exception(
+            "Charge edit on %s saved, but PDF re-render failed — regenerate manually",
+            ticket.reference,
+        )
+
+
 @router.post("/tickets/{reference}/pdf/regenerate")
 def regenerate_resolution_pdf(
     reference: str,
@@ -998,33 +1046,22 @@ def regenerate_resolution_pdf(
     Preserves the original storage key (so existing references to the file
     remain valid) and bumps `pdf_generated_at` to the current time.
     """
-    from datetime import datetime, timezone  # local — module-level import already covers timedelta
-
-    from ..services.pdf_generator import generate_resolution_pdf  # avoid module-load cost when unused
-
     if user.role not in ADMIN_MANAGER_ROLES:
         raise HTTPException(status_code=403, detail="Manager or Admin only")
     ticket = _load_ticket(db, reference, user)
-    res = ticket.resolution
     # Need both signatures so the regenerated PDF carries the same legal
     # weight as the original; we never want a "draft-looking" PDF replacing
     # a fully-signed one.
-    if res is None or res.customer_signed_at is None or res.engineer_signed_at is None:
+    if not _rerender_resolution_pdf(db, ticket):
         raise HTTPException(
             status_code=409,
             detail="Can only regenerate after both signatures are in place.",
         )
-
-    pdf_bytes = generate_resolution_pdf(ticket, res)
-    storage = get_storage()
-    filename = f"resolution-{ticket.reference}.pdf"
-    meta = storage.save_bytes(pdf_bytes, "application/pdf", ticket.reference, filename)
-    res.pdf_storage_key = meta["storage_url"]
-    res.pdf_generated_at = datetime.now(timezone.utc)
-    db.commit()
-    db.refresh(res)
+    res = ticket.resolution
     logger.info("Regenerated PDF for %s by %s", ticket.reference, user.username)
 
+    storage = get_storage()
+    filename = f"resolution-{ticket.reference}.pdf"
     url = storage.public_url(res.pdf_storage_key)
     if not url.startswith("http"):
         url = f"http://localhost:8000{url}"
@@ -1566,6 +1603,7 @@ def add_ticket_spare(
         "Added spare '%s' x%d to %s by %s",
         spare.name, spare.quantity, ticket.reference, user.username,
     )
+    _sync_charges_pdf(db, ticket, user)
     return spare
 
 
@@ -1594,6 +1632,7 @@ def update_ticket_spare(
         spare.quantity = int(body.quantity)
     db.commit()
     db.refresh(spare)
+    _sync_charges_pdf(db, ticket, user)
     return spare
 
 
@@ -1616,6 +1655,7 @@ def remove_ticket_spare(
         raise HTTPException(status_code=404, detail="Spare not found")
     db.delete(spare)
     db.commit()
+    _sync_charges_pdf(db, ticket, user)
     return None
 
 
@@ -1651,6 +1691,7 @@ def update_service_fee(
     ticket.service_fee_inr = new_fee
     db.commit()
     db.refresh(ticket)
+    _sync_charges_pdf(db, ticket, user)
     return compute_charges(ticket)
 
 
