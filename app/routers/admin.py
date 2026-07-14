@@ -1457,6 +1457,19 @@ def _can_manage_spares(ticket: Ticket, user: User) -> bool:
     return ticket.assigned_engineer_id == user.id
 
 
+def _can_manage_charges(ticket: Ticket, user: User) -> bool:
+    """Who may touch the invoice (spares + service fee) right now.
+
+    A Super Admin is exempt from the freeze above: they may correct the
+    figures any time before the ticket is CLOSED, including after RESOLVED
+    when the customer has already signed. Regenerate the resolution PDF
+    afterwards so the signed document matches the corrected invoice.
+    """
+    if user.role in SUPER_ADMIN_ROLES:
+        return ticket.status != "CLOSED"
+    return _can_manage_spares(ticket, user)
+
+
 @router.get("/spare-catalog", response_model=List[SpareCatalogItem])
 def list_spare_catalog(
     product: Optional[str] = Query(default=None, description="Filter by product category"),
@@ -1504,7 +1517,7 @@ def add_ticket_spare(
             status_code=409,
             detail="Spare parts don't apply to remote-support tickets.",
         )
-    if not _can_manage_spares(ticket, user):
+    if not _can_manage_charges(ticket, user):
         if ticket.status not in ("RESOLVING",):
             raise HTTPException(
                 status_code=409,
@@ -1566,7 +1579,7 @@ def update_ticket_spare(
 ):
     """Edit price or quantity of an existing spare line item."""
     ticket = _load_ticket(db, reference, user)
-    if not _can_manage_spares(ticket, user):
+    if not _can_manage_charges(ticket, user):
         raise HTTPException(status_code=403, detail="Not allowed to edit spares on this ticket")
     spare = (
         db.query(TicketSpare)
@@ -1592,7 +1605,7 @@ def remove_ticket_spare(
     user: User = Depends(get_current_user),
 ):
     ticket = _load_ticket(db, reference, user)
-    if not _can_manage_spares(ticket, user):
+    if not _can_manage_charges(ticket, user):
         raise HTTPException(status_code=403, detail="Not allowed to edit spares on this ticket")
     spare = (
         db.query(TicketSpare)
@@ -1614,14 +1627,19 @@ def update_service_fee(
     user: User = Depends(get_current_user),
 ):
     ticket = _load_ticket(db, reference, user)
-    if not _can_manage_spares(ticket, user):
-        raise HTTPException(status_code=403, detail="Not allowed to edit charges on this ticket")
     new_fee = int(body.service_fee_inr)
-    # Out-of-warranty tickets carry a per-service-type minimum charge. Anyone
-    # who can edit charges may set it at/above that floor; only an Admin (the
-    # "owner") may go below it (a waiver/discount).
-    min_fee = oow_min_service_fee_inr(ticket)
     is_super_admin = user.role in SUPER_ADMIN_ROLES
+    if not _can_manage_charges(ticket, user):
+        if is_super_admin:
+            raise HTTPException(
+                status_code=403,
+                detail="Ticket is closed — charges can no longer be edited.",
+            )
+        raise HTTPException(status_code=403, detail="Not allowed to edit charges on this ticket")
+    # Out-of-warranty tickets carry a per-service-type minimum charge. Anyone
+    # who can edit charges may set it at/above that floor; only a Super Admin
+    # may go below it (a waiver/discount).
+    min_fee = oow_min_service_fee_inr(ticket)
     if new_fee < min_fee and not is_super_admin:
         raise HTTPException(
             status_code=422,
