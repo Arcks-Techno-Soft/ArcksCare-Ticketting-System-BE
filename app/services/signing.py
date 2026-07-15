@@ -297,6 +297,10 @@ def record_engineer_signature(
     db.commit()
     db.refresh(ticket)
     db.refresh(resolution)
+    if ticket.status == TicketStatus.CLOSED.value:
+        # Local import avoids any import cycle through the notify service.
+        from .ticket_notify import notify_sales_rep_closed
+        notify_sales_rep_closed(ticket.id)
     return resolution
 
 
@@ -454,6 +458,9 @@ def record_field_signatures(
     db.commit()
     db.refresh(ticket)
     db.refresh(resolution)
+    if ticket.status == TicketStatus.CLOSED.value:
+        from .ticket_notify import notify_sales_rep_closed
+        notify_sales_rep_closed(ticket.id)
     logger.info(
         "Field signatures recorded for %s by sub-engineer %s — ticket closed",
         ticket.reference, sub.name,

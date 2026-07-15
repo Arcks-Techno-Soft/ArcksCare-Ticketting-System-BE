@@ -129,6 +129,11 @@ class Settings(BaseSettings):
     # Blank -> plain-text body (Sandbox only).
     twilio_install_assign_content_sid: str = Field(default="")
     twilio_install_closed_content_sid: str = Field(default="")
+    # Approved content-template SIDs for the sales-rep TICKET alerts.
+    # {{1}}..{{3}} vars for both = rep name, ticket reference, business name.
+    # Blank -> plain-text body (Sandbox only).
+    twilio_ticket_sales_rep_assign_content_sid: str = Field(default="")
+    twilio_ticket_sales_rep_closed_content_sid: str = Field(default="")
 
     @field_validator("cors_origins")
     @classmethod

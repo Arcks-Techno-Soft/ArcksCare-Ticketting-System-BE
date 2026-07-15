@@ -134,6 +134,11 @@ class Ticket(Base):
     assigned_engineer_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     assigned_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Sales rep credited with this service call. Set by an Admin/Manager. NULL
+    # when none picked. View-only: the credited rep can see the ticket (list +
+    # detail) but has no actions on it — no workflow guard references this field.
+    sales_rep_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+
     # Soft delete — Admin/Owner only. NULL = live; when set, the ticket is
     # hidden from every list/detail/analytics query but the row is retained for
     # audit and recovery.
@@ -223,6 +228,9 @@ class Ticket(Base):
     )
     assigned_engineer: Mapped[Optional["User"]] = relationship(
         foreign_keys=[assigned_engineer_id], lazy="joined"
+    )
+    sales_rep: Mapped[Optional["User"]] = relationship(
+        foreign_keys=[sales_rep_id], lazy="joined"
     )
     deleted_by: Mapped[Optional["User"]] = relationship(
         foreign_keys=[deleted_by_id], lazy="joined"

@@ -37,6 +37,26 @@ def ensure_raised_by_column(engine: Engine) -> None:
         conn.execute(text(f"ALTER TABLE {qualify('tickets')} ADD COLUMN raised_by_id INTEGER"))
 
 
+def ensure_ticket_sales_rep_column(engine: Engine) -> None:
+    """Add tickets.sales_rep_id if it's missing.
+
+    Credits a SALES user (or a Manager flagged `is_sales_rep`) with a service
+    call. `create_all` adds new tables but never new columns on existing tables,
+    so this small idempotent ALTER backfills it for databases that pre-date the
+    feature. Nullable so existing rows stay valid. Works on SQLite + Postgres.
+    Scoped to DB_SCHEMA so a test backend can NEVER alter the public/production
+    table.
+    """
+    insp = inspect(engine)
+    if "tickets" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # Fresh DB — create_all will include the column.
+    existing = {c["name"] for c in insp.get_columns("tickets", schema=MIGRATION_SCHEMA)}
+    if "sales_rep_id" in existing:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(f"ALTER TABLE {qualify('tickets')} ADD COLUMN sales_rep_id INTEGER"))
+
+
 def ensure_contact_person_profile_column(engine: Engine) -> None:
     """Add tickets.contact_person_profile if it's missing.
 

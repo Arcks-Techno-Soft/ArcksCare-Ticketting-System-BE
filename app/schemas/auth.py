@@ -110,6 +110,11 @@ class AssignEngineerRequest(BaseModel):
     engineer_id: int
 
 
+class TicketSalesRepUpdate(BaseModel):
+    # Credit a sales rep with the service call, or clear it with null.
+    sales_rep_id: Optional[int] = None
+
+
 class ForceCloseRequest(BaseModel):
     # Admin/Owner override-close. Reason is mandatory for the audit trail.
     reason: str = Field(min_length=3, max_length=500)
