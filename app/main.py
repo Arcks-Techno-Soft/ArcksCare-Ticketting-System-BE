@@ -94,6 +94,7 @@ def _bootstrap_db() -> None:
     from .services.ticket_service import (
         ensure_contact_person_profile_column,
         ensure_raised_by_column,
+        ensure_ticket_sales_rep_column,
         ensure_ticket_soft_delete_columns,
     )
     from .services.ticket_workflow import ensure_worknote_attempt_column
@@ -121,6 +122,7 @@ def _bootstrap_db() -> None:
     ensure_sub_engineer_fee_column(engine)
     ensure_raised_by_column(engine)
     ensure_contact_person_profile_column(engine)
+    ensure_ticket_sales_rep_column(engine)
     ensure_ticket_soft_delete_columns(engine)
     ensure_installation_invoice_document_columns(engine)
     ensure_installation_products_column(engine)

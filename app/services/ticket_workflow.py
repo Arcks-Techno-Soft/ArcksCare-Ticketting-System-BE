@@ -412,6 +412,9 @@ def force_close(db: Session, ticket: Ticket, actor: User, reason: str) -> Ticket
     )
     db.commit()
     db.refresh(ticket)
+    if ticket.status == TicketStatus.CLOSED.value:
+        from .ticket_notify import notify_sales_rep_closed
+        notify_sales_rep_closed(ticket.id)
     logger.info("Ticket %s force-closed from %s by %s: %s",
                 ticket.reference, prev, actor.username, reason)
     return ticket
@@ -510,6 +513,9 @@ def collect_payment(db: Session, ticket: Ticket, actor: User, amount_inr: int) -
             )
     db.commit()
     db.refresh(ticket)
+    if ticket.status == TicketStatus.CLOSED.value:
+        from .ticket_notify import notify_sales_rep_closed
+        notify_sales_rep_closed(ticket.id)
     logger.info(
         "Payment ₹%s recorded for %s by %s (collected %s/%s, status=%s)",
         amount_inr, ticket.reference, actor.username,
@@ -814,6 +820,9 @@ def resolve(db: Session, ticket: Ticket, actor: User, summary: str) -> tuple[Tic
         )
         db.commit()
         db.refresh(ticket)
+        if ticket.status == TicketStatus.CLOSED.value:
+            from .ticket_notify import notify_sales_rep_closed
+            notify_sales_rep_closed(ticket.id)
         logger.info("Ticket %s resolved + closed (remote) by %s in %s min",
                     ticket.reference, actor.username, mins)
         return ticket, None

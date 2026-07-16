@@ -43,6 +43,7 @@ from ..schemas.auth import (
     SubEngineerOut,
     SubEngineerRosterOut,
     TicketEventOut,
+    TicketSalesRepUpdate,
     TicketSpareOut,
     UpdateRosterSubEngineerRequest,
     UpdateServiceTypeRequest,
@@ -73,6 +74,7 @@ from ..services.auth import get_current_user, hash_password, require_role
 from ..services.email import send_engineer_assignment
 from ..services.push import notify_ticket_assigned, register_token, unregister_token
 from ..services.whatsapp import send_engineer_assignment_alert
+from ..services.ticket_notify import notify_sales_rep_assigned as notify_ticket_sales_rep_assigned
 from ..services.signing import (
     generate_field_sign_link,
     record_customer_signature_via_engineer,
@@ -382,7 +384,13 @@ def list_businesses(db: Session = Depends(get_db), user: User = Depends(get_curr
             or_(Ticket.assigned_engineer_id == user.id, Ticket.id.in_(additional))
         )
     elif user.role == UserRole.SALES.value:
-        q = q.filter(Ticket.raised_by_id == user.id)
+        q = q.filter(
+            or_(
+                Ticket.raised_by_id == user.id,
+                Ticket.sales_rep_id == user.id,
+                Ticket.assigned_engineer_id == user.id,
+            )
+        )
     rows = q.distinct().order_by(Ticket.business_name).all()
     return [r[0] for r in rows if r[0]]
 
@@ -438,10 +446,15 @@ def list_tickets(
             or_(Ticket.assigned_engineer_id == user.id, Ticket.id.in_(additional))
         )
     elif user.role == UserRole.SALES.value:
-        # Sales reps see tickets they raised OR that are assigned to them (a
-        # service call can now be assigned to a sales rep).
+        # Sales reps see tickets they raised OR that they're credited on as the
+        # sales rep (view-only). The assigned_engineer_id clause preserves
+        # visibility of any ticket credited via the older assignment path.
         q = q.filter(
-            or_(Ticket.raised_by_id == user.id, Ticket.assigned_engineer_id == user.id)
+            or_(
+                Ticket.raised_by_id == user.id,
+                Ticket.sales_rep_id == user.id,
+                Ticket.assigned_engineer_id == user.id,
+            )
         )
     if status:
         q = q.filter(Ticket.status == status.upper())
@@ -558,7 +571,11 @@ def ticket_status_counts(
         )
     elif user.role == UserRole.SALES.value:
         q = q.filter(
-            or_(Ticket.raised_by_id == user.id, Ticket.assigned_engineer_id == user.id)
+            or_(
+                Ticket.raised_by_id == user.id,
+                Ticket.sales_rep_id == user.id,
+                Ticket.assigned_engineer_id == user.id,
+            )
         )
     if severity:
         q = q.filter(Ticket.severity == severity.upper())
@@ -657,6 +674,55 @@ def self_assign_ticket(
         raise HTTPException(status_code=403, detail="Only Manager or Admin can self-assign")
     ticket = _load_ticket(db, reference, user)
     ticket, _ = assign_engineer(db, ticket, user, user.id)
+    return ticket
+
+
+@router.patch("/tickets/{reference}/sales-rep", response_model=TicketResponse)
+def update_ticket_sales_rep(
+    reference: str,
+    body: TicketSalesRepUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Set, change, or clear the sales rep credited with this service call.
+
+    Admin / Manager only. Editable until the ticket is CLOSED. The credited rep
+    is view-only — being set here lets them see the ticket (list + detail) but
+    grants no actions on it. Passing ``sales_rep_id: null`` clears the credit.
+    """
+    if user.role not in ADMIN_MANAGER_ROLES:
+        raise HTTPException(
+            status_code=403, detail="Only Admin or Manager can assign a sales rep"
+        )
+    ticket = _load_ticket(db, reference, user)
+    if ticket.status == "CLOSED":
+        raise HTTPException(
+            status_code=409,
+            detail="Ticket is closed — the sales rep can no longer be changed.",
+        )
+    prev_rep_id = ticket.sales_rep_id
+    if body.sales_rep_id is None:
+        ticket.sales_rep_id = None
+    else:
+        rep = db.query(User).filter(User.id == body.sales_rep_id).one_or_none()
+        # A valid rep is an active SALES-role user, or anyone flagged
+        # is_sales_rep (e.g. a Manager who also does sales) — same rule the
+        # installations endpoint enforces.
+        if rep is None or not rep.active or not (
+            rep.role == UserRole.SALES.value or bool(rep.is_sales_rep)
+        ):
+            raise HTTPException(status_code=400, detail="Invalid sales representative")
+        ticket.sales_rep_id = rep.id
+    db.commit()
+    db.refresh(ticket)
+    # Alert only when a new, different rep was credited, and not when a manager
+    # credits themselves.
+    if (
+        ticket.sales_rep_id is not None
+        and ticket.sales_rep_id != prev_rep_id
+        and ticket.sales_rep_id != user.id
+    ):
+        notify_ticket_sales_rep_assigned(ticket.id)
     return ticket
 
 
@@ -1921,12 +1987,14 @@ def _load_ticket(
         and not any(ae.engineer_id == user.id for ae in t.additional_engineers)
     ):
         raise HTTPException(status_code=404, detail="Ticket not found")
-    # Sales reps can open tickets they raised themselves or that are assigned to
-    # them (a service call can now be assigned to a sales rep).
+    # Sales reps can open tickets they raised themselves or that they're
+    # credited on as the sales rep (view-only — visibility, not the right to
+    # act). The assigned_engineer_id clause preserves the older assignment path.
     if (
         user is not None
         and user.role == UserRole.SALES.value
         and t.raised_by_id != user.id
+        and t.sales_rep_id != user.id
         and t.assigned_engineer_id != user.id
     ):
         raise HTTPException(status_code=404, detail="Ticket not found")

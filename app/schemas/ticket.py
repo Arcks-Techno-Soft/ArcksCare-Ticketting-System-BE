@@ -261,6 +261,8 @@ class TicketResponse(BaseModel):
     assigned_by: Optional[UserOut] = None
     assigned_engineer: Optional[UserOut] = None
     assigned_at: Optional[datetime] = None
+    # Sales rep credited with this service call (view-only for the rep).
+    sales_rep: Optional[UserOut] = None
 
     # Resolution context (Phase 2.3+)
     accepted_at: Optional[datetime] = None
@@ -339,6 +341,7 @@ class TicketListItem(BaseModel):
     service_type: str
     raised_by: Optional[UserOut] = None
     assigned_engineer: Optional[UserOut] = None
+    sales_rep: Optional[UserOut] = None
     created_at: datetime
 
 
