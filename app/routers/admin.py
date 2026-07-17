@@ -1564,12 +1564,13 @@ def _can_manage_charges(ticket: Ticket, user: User) -> bool:
     """Who may touch the invoice (spares + service fee) right now.
 
     A Super Admin is exempt from the freeze above: they may correct the
-    figures any time before the ticket is CLOSED, including after RESOLVED
-    when the customer has already signed. Regenerate the resolution PDF
-    afterwards so the signed document matches the corrected invoice.
+    figures at ANY status, including after the ticket is CLOSED — a
+    post-close billing correction. Everyone else is held to the RESOLVING
+    window. After such an edit the resolution PDF is regenerated so the
+    signed document keeps matching the corrected invoice.
     """
     if user.role in SUPER_ADMIN_ROLES:
-        return ticket.status != "CLOSED"
+        return True
     return _can_manage_spares(ticket, user)
 
 
@@ -1735,12 +1736,9 @@ def update_service_fee(
     ticket = _load_ticket(db, reference, user)
     new_fee = int(body.service_fee_inr)
     is_super_admin = user.role in SUPER_ADMIN_ROLES
+    # A Super Admin may edit charges at any status (including CLOSED); everyone
+    # else is held to the RESOLVING window by _can_manage_charges.
     if not _can_manage_charges(ticket, user):
-        if is_super_admin:
-            raise HTTPException(
-                status_code=403,
-                detail="Ticket is closed — charges can no longer be edited.",
-            )
         raise HTTPException(status_code=403, detail="Not allowed to edit charges on this ticket")
     # Out-of-warranty tickets carry a per-service-type minimum charge. Anyone
     # who can edit charges may set it at/above that floor; only a Super Admin
