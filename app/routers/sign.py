@@ -193,3 +193,108 @@ async def submit_field_signatures(
     )
     db.refresh(resolution)
     return _field_doc(ticket, resolution)
+
+
+# ------------------ installation off-field signing ----------------------- #
+#
+# Same model as the ticket field-sign flow: an Admin/Manager/assignee generates
+# the link and sends it to the sub-engineer, who opens it on site and captures
+# the customer's signature, their own signature, and photos of the finished
+# installation. No JWT — the token is the auth factor.
+
+class InstallationFieldSignDoc(BaseModel):
+    """Public payload for the installation field-signing page."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    reference: str
+    business_name: str
+    contact_name: str
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    address_line3: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    invoice_number: Optional[str] = None
+    products_for_installation: Optional[str] = None
+    engineer_name: Optional[str] = None
+    sub_engineers: List[PublicSubEngineer] = []
+    customer_signed_at: Optional[datetime] = None
+    engineer_signed_at: Optional[datetime] = None
+    completed: bool = False
+
+
+def _installation_field_doc(inst, resolution) -> "InstallationFieldSignDoc":
+    return InstallationFieldSignDoc(
+        reference=inst.reference,
+        business_name=inst.business_name,
+        contact_name=inst.contact_name,
+        address_line1=inst.address_line1,
+        address_line2=inst.address_line2,
+        address_line3=inst.address_line3,
+        city=inst.city,
+        state=inst.state,
+        pincode=inst.pincode,
+        invoice_number=inst.invoice_number,
+        products_for_installation=inst.products_for_installation,
+        engineer_name=inst.assigned_engineer.name if inst.assigned_engineer else None,
+        sub_engineers=[PublicSubEngineer.model_validate(s) for s in inst.sub_engineers],
+        customer_signed_at=resolution.customer_signed_at,
+        engineer_signed_at=resolution.engineer_signed_at,
+        completed=resolution.engineer_signed_at is not None,
+    )
+
+
+@router.get("/installations/{token}/field", response_model=InstallationFieldSignDoc)
+def fetch_installation_field_doc(token: str, db: Session = Depends(get_db)):
+    """Public payload for the sub-engineer's no-login installation page."""
+    from ..services.installation_signing import get_installation_resolution_by_token
+
+    inst, resolution = get_installation_resolution_by_token(db, token)
+    if resolution.field_sign_link_generated_at is None:
+        raise HTTPException(status_code=404, detail="This is not a field-signing link")
+    return _installation_field_doc(inst, resolution)
+
+
+@router.post(
+    "/installations/{token}/field",
+    response_model=InstallationFieldSignDoc,
+    status_code=201,
+)
+async def submit_installation_field_signatures(
+    token: str,
+    sub_engineer_id: int = Form(..., description="ID of the signing sub-engineer"),
+    customer_signer_name: str = Form(..., min_length=2, max_length=120),
+    customer_signature: UploadFile = File(..., description="PNG of the customer's signature"),
+    engineer_signature: UploadFile = File(..., description="PNG of the sub-engineer's signature"),
+    photo: UploadFile | None = File(None, description="Optional photo of the customer"),
+    media: List[UploadFile] = File([], description="Photos of the completed installation"),
+    db: Session = Depends(get_db),
+):
+    """Record both signatures + installation photos collected on site. On
+    success the installation PDF is generated and the installation closes.
+    Single-use — re-submitting returns 409."""
+    from ..services.installation_signing import (
+        get_installation_resolution_by_token,
+        record_field_signatures as record_installation_field_signatures,
+    )
+
+    inst, resolution = get_installation_resolution_by_token(db, token)
+    customer_bytes = await customer_signature.read()
+    engineer_bytes = await engineer_signature.read()
+    photo_bytes = await photo.read() if photo is not None else None
+    record_installation_field_signatures(
+        db, inst, resolution,
+        sub_engineer_id=sub_engineer_id,
+        customer_signer_name=customer_signer_name,
+        customer_image_bytes=customer_bytes,
+        engineer_image_bytes=engineer_bytes,
+        customer_content_type=customer_signature.content_type or "image/png",
+        engineer_content_type=engineer_signature.content_type or "image/png",
+        photo_bytes=photo_bytes,
+        photo_content_type=photo.content_type if photo is not None else None,
+        media_files=media,
+    )
+    db.refresh(resolution)
+    return _installation_field_doc(inst, resolution)

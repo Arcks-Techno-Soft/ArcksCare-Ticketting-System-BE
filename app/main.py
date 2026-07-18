@@ -83,6 +83,7 @@ def _bootstrap_db() -> None:
     )
     from .services.shipments import ensure_shipment_delivered_at_column
     from .services.signing import ensure_resolution_field_signing_columns
+    from .services.installation_signing import ensure_installation_field_signing_columns
     from .services.spares import (
         ensure_payment_columns,
         ensure_service_fee_column,
@@ -119,6 +120,7 @@ def _bootstrap_db() -> None:
     ensure_user_profile_columns(engine)
     ensure_shipment_delivered_at_column(engine)
     ensure_resolution_field_signing_columns(engine)
+    ensure_installation_field_signing_columns(engine)
     ensure_sub_engineer_fee_column(engine)
     ensure_raised_by_column(engine)
     ensure_contact_person_profile_column(engine)

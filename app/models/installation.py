@@ -115,6 +115,13 @@ class Installation(Base):
     resolution: Mapped[Optional["InstallationResolution"]] = relationship(
         back_populates="installation", cascade="all, delete-orphan", uselist=False
     )
+    # Off-field contractors attending this installation. Not User rows — they
+    # don't log in; they sign via the tokenized field-sign link.
+    sub_engineers: Mapped[List["InstallationSubEngineer"]] = relationship(
+        back_populates="installation",
+        cascade="all, delete-orphan",
+        order_by="InstallationSubEngineer.created_at",
+    )
 
     created_by: Mapped[Optional["User"]] = relationship(
         foreign_keys=[created_by_id], lazy="joined"
@@ -273,6 +280,19 @@ class InstallationResolution(Base):
 
     engineer_signature_storage_key: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     engineer_signed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Who signed the engineer side. Normally the assigned engineer; when an
+    # off-field sub-engineer signs via the field link, their name is recorded
+    # here and `signed_by_sub_engineer_id` points at them.
+    engineer_signer_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    # Set when an Admin/Manager/engineer generates the off-field signing link.
+    # Once set, on-site signing through the app is locked — the sub-engineer
+    # captures both signatures through the public tokenized page instead.
+    field_sign_link_generated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    signed_by_sub_engineer_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("installation_sub_engineers.id", ondelete="SET NULL"), nullable=True
+    )
 
     pdf_storage_key: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     pdf_generated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -283,6 +303,68 @@ class InstallationResolution(Base):
     )
 
     installation: Mapped["Installation"] = relationship(back_populates="resolution")
+    # Installation photos captured by the sub-engineer at field sign-off.
+    media: Mapped[List["InstallationResolutionMedia"]] = relationship(
+        back_populates="resolution",
+        cascade="all, delete-orphan",
+        order_by="InstallationResolutionMedia.uploaded_at",
+    )
+
+
+class InstallationSubEngineer(Base):
+    """An off-field contractor attending an installation.
+
+    Mirrors the ticket-side `SubEngineer`: NOT a User row (they don't log in).
+    The reusable district roster (`SubEngineerRoster`) is shared with tickets —
+    a contractor added here is available on tickets too, and vice versa.
+    """
+
+    __tablename__ = "installation_sub_engineers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    installation_id: Mapped[int] = mapped_column(
+        ForeignKey("installations.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(120))
+    phone: Mapped[str] = mapped_column(String(20))
+    # Defaults to the installation's city, but editable for a nearby town.
+    location: Mapped[str] = mapped_column(String(120))
+    # Fee paid to this contractor (INR). Internal cost — never on the customer
+    # PDF. NULL until recorded; unlike tickets this does NOT block closing.
+    fee_inr: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    created_by_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    installation: Mapped["Installation"] = relationship(back_populates="sub_engineers")
+    created_by: Mapped[Optional["User"]] = relationship(lazy="joined")
+
+
+class InstallationResolutionMedia(Base):
+    """A photo of the completed installation, captured by the sub-engineer at
+    field sign-off. Optional supporting evidence of the on-site work."""
+
+    __tablename__ = "installation_resolution_media"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    resolution_id: Mapped[int] = mapped_column(
+        ForeignKey("installation_resolutions.id", ondelete="CASCADE"), index=True
+    )
+    # "photo" or "video" — derived from the content type at upload time.
+    kind: Mapped[str] = mapped_column(String(16))
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(120))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    storage_url: Mapped[str] = mapped_column(String(500))
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    resolution: Mapped["InstallationResolution"] = relationship(back_populates="media")
 
 
 from .user import User  # noqa: E402,F401
