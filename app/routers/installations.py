@@ -15,7 +15,9 @@ from ..models.installation import (
     InstallationEvent,
     InstallationNote,
     InstallationStatus,
+    InstallationSubEngineer,
 )
+from ..models.sub_engineer import SubEngineerRoster
 from ..models.user import User, UserRole, ADMIN_MANAGER_ROLES, ADMIN_ROLES, SUPER_ADMIN_ROLES
 from ..schemas.installation import (
     InstallationAddressUpdate,
@@ -30,9 +32,16 @@ from ..schemas.installation import (
     InstallationOut,
     InstallationSalesRepUpdate,
 )
+from ..schemas.auth import (
+    AddSubEngineerRequest,
+    SubEngineerOut,
+    SubEngineerRosterOut,
+    UpdateSubEngineerFeeRequest,
+)
 from ..services.auth import get_current_user, require_role
 from ..services.installation_notify import notify_sales_rep_assigned
 from ..services.installation_signing import (
+    generate_field_sign_link,
     record_customer_signature_via_engineer,
     record_engineer_signature,
 )
@@ -561,4 +570,190 @@ def installation_pdf(
         "url": url,
         "filename": f"installation-{reference}.pdf",
         "generated_at": res.pdf_generated_at,
+    }
+
+
+# --------------------------- sub-engineers ------------------------------- #
+#
+# Off-field contractors attending an installation. Mirrors the ticket-side
+# feature and SHARES the same district roster (SubEngineerRoster), so a
+# contact added on a ticket is reusable here and vice versa.
+
+def _can_manage_sub_engineers(inst: Installation, user: User) -> bool:
+    if user.role in ADMIN_MANAGER_ROLES:
+        return True
+    return inst.assigned_engineer_id == user.id
+
+
+@router.get("/{reference}/sub-engineers", response_model=List[SubEngineerOut])
+def list_installation_sub_engineers(
+    reference: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    inst = _load(db, reference, user)
+    return inst.sub_engineers
+
+
+@router.get(
+    "/{reference}/sub-engineer-suggestions", response_model=List[SubEngineerRosterOut]
+)
+def installation_sub_engineer_suggestions(
+    reference: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Active roster contacts in this installation's city, minus those already
+    on the installation. Feeds the 'add from roster' picker."""
+    inst = _load(db, reference, user)
+    rows = (
+        db.query(SubEngineerRoster)
+        .filter(
+            SubEngineerRoster.active.is_(True),
+            func.lower(SubEngineerRoster.district) == (inst.city or "").lower(),
+        )
+        .order_by(SubEngineerRoster.name)
+        .all()
+    )
+    taken = {(s.name.lower(), s.phone) for s in inst.sub_engineers}
+    return [r for r in rows if (r.name.lower(), r.phone) not in taken]
+
+
+@router.post("/{reference}/sub-engineers", response_model=SubEngineerOut, status_code=201)
+def add_installation_sub_engineer(
+    reference: str,
+    body: AddSubEngineerRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Add a contractor from the roster (`roster_id`) or as a new contact
+    (`name` + `phone` + `location`). A new contact also joins the district
+    roster so it's reusable later."""
+    from .admin import _ensure_roster_entry  # local import avoids an import cycle
+
+    inst = _load(db, reference, user)
+    if not _can_manage_sub_engineers(inst, user):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the assigned engineer, a Manager, or an Admin can do this.",
+        )
+    if inst.status == InstallationStatus.CLOSED.value:
+        raise HTTPException(
+            status_code=409,
+            detail="This installation is closed — sub-engineers can no longer be added.",
+        )
+    if body.roster_id is not None:
+        entry = (
+            db.query(SubEngineerRoster)
+            .filter(SubEngineerRoster.id == body.roster_id, SubEngineerRoster.active.is_(True))
+            .one_or_none()
+        )
+        if entry is None:
+            raise HTTPException(status_code=404, detail="Roster contact not found")
+        name, phone, location = entry.name, entry.phone, entry.district
+    else:
+        if not (body.name and body.phone and body.location):
+            raise HTTPException(
+                status_code=422,
+                detail="Provide roster_id, or all of name, phone and location.",
+            )
+        name, phone, location = body.name.strip(), body.phone.strip(), body.location.strip()
+        _ensure_roster_entry(db, name=name, phone=phone, district=location, actor=user)
+
+    sub = InstallationSubEngineer(
+        installation_id=inst.id,
+        name=name,
+        phone=phone,
+        location=location,
+        created_by_user_id=user.id,
+    )
+    db.add(sub)
+    db.commit()
+    db.refresh(sub)
+    logger.info(
+        "Added sub-engineer '%s' to installation %s by %s",
+        sub.name, inst.reference, user.username,
+    )
+    return sub
+
+
+@router.patch(
+    "/{reference}/sub-engineers/{sub_id}", response_model=SubEngineerOut
+)
+def update_installation_sub_engineer_fee(
+    reference: str,
+    sub_id: int,
+    body: UpdateSubEngineerFeeRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Record the outsourcing fee. Allowed at any status — the figure is an
+    internal cost and is often known only after the work is done."""
+    inst = _load(db, reference, user)
+    if not _can_manage_sub_engineers(inst, user):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the assigned engineer, a Manager, or an Admin can do this.",
+        )
+    sub = (
+        db.query(InstallationSubEngineer)
+        .filter(
+            InstallationSubEngineer.id == sub_id,
+            InstallationSubEngineer.installation_id == inst.id,
+        )
+        .one_or_none()
+    )
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Sub-engineer not found")
+    sub.fee_inr = int(body.fee_inr)
+    db.commit()
+    db.refresh(sub)
+    return sub
+
+
+@router.delete("/{reference}/sub-engineers/{sub_id}", status_code=204)
+def remove_installation_sub_engineer(
+    reference: str,
+    sub_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    inst = _load(db, reference, user)
+    if not _can_manage_sub_engineers(inst, user):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the assigned engineer, a Manager, or an Admin can do this.",
+        )
+    sub = (
+        db.query(InstallationSubEngineer)
+        .filter(
+            InstallationSubEngineer.id == sub_id,
+            InstallationSubEngineer.installation_id == inst.id,
+        )
+        .one_or_none()
+    )
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Sub-engineer not found")
+    db.delete(sub)
+    db.commit()
+    return None
+
+
+@router.post("/{reference}/field-sign-link")
+def installation_field_sign_link(
+    reference: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Generate the off-field signing link to send to a sub-engineer manually.
+
+    They open it on site and capture the customer's signature, their own
+    signature, and photos of the completed installation.
+    """
+    inst = _load(db, reference, user)
+    resolution, url = generate_field_sign_link(db, inst, user)
+    return {
+        "url": url,
+        "token": resolution.customer_sign_token,
+        "generated_at": resolution.field_sign_link_generated_at,
     }

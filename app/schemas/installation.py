@@ -4,7 +4,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .auth import UserOut
+from .auth import SubEngineerOut, UserOut
 
 
 class InstallationAddressUpdate(BaseModel):
@@ -237,6 +237,8 @@ class InstallationOut(BaseModel):
 
     resolution: Optional[InstallationResolutionOut] = None
     attempts: List[InstallationAttemptOut] = []
+    # Off-field contractors attending this installation.
+    sub_engineers: List[SubEngineerOut] = []
 
 
 class InstallationListItem(BaseModel):
