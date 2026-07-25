@@ -81,6 +81,33 @@ class InstallationAssignRequest(BaseModel):
     engineer_id: int
 
 
+class InstallationCustomerUpdate(BaseModel):
+    """Editable customer / contact details. Assignee / Admin / Manager may
+    correct these before the installation is CLOSED. Mirrors the customer half
+    of InstallationCreate, reusing the same normalisers."""
+
+    business_name: str = Field(min_length=2, max_length=200)
+    business_category: str = Field(min_length=2, max_length=80)
+    contact_name: str = Field(min_length=2, max_length=120)
+    phone: str = Field(min_length=7, max_length=20)
+    email: Optional[str] = Field(default=None, max_length=200)
+
+    @field_validator("phone")
+    @classmethod
+    def _clean_phone(cls, v: str) -> str:
+        cleaned = "".join(ch for ch in v if ch.isdigit() or ch == "+")
+        if not cleaned or len(cleaned.lstrip("+")) < 7:
+            raise ValueError("Enter a valid phone number")
+        return cleaned
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _empty_email_to_none(cls, v):
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+
 class InstallationInvoiceUpdate(BaseModel):
     invoice_number: str = Field(min_length=1, max_length=80)
 

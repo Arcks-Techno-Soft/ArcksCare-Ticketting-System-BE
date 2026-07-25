@@ -487,6 +487,50 @@ def update_address(
     return installation
 
 
+def update_customer(
+    db: Session, installation: Installation, actor: User, data: dict
+) -> Installation:
+    """Edit the customer / contact details.
+
+    Same gate as the invoice number: assignee / Admin / Manager, before CLOSED.
+    `data` carries the already-validated fields (business_name, business_category,
+    contact_name, phone, email); a blank email arrives as None.
+    """
+    can_edit = (
+        actor.role in ADMIN_MANAGER_ROLES
+        or installation.assigned_engineer_id == actor.id
+    )
+    if not can_edit:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the assignee, Admin, or Manager can edit the customer details",
+        )
+    if installation.status == InstallationStatus.CLOSED.value:
+        raise HTTPException(
+            status_code=409,
+            detail="The customer details can't be changed after the installation is closed.",
+        )
+
+    installation.business_name = data["business_name"].strip()
+    installation.business_category = data["business_category"].strip()
+    installation.contact_name = data["contact_name"].strip()
+    installation.phone = data["phone"]
+    email = data.get("email")
+    installation.email = (email or "").strip().lower() or None
+
+    _log_event(
+        db, installation=installation, actor=actor, event_type="CUSTOMER_UPDATED",
+        payload={
+            "business_name": installation.business_name,
+            "contact_name": installation.contact_name,
+        },
+    )
+    db.commit()
+    db.refresh(installation)
+    logger.info("Installation %s customer details updated by %s", installation.reference, actor.username)
+    return installation
+
+
 # --------------------------- work attempts ------------------------------- #
 
 def _can_work(installation: Installation, actor: User) -> bool:
