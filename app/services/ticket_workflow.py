@@ -996,3 +996,60 @@ def set_third_party_info(
     db.refresh(ticket)
     logger.info("Ticket %s third-party details updated by %s", ticket.reference, actor.username)
     return ticket
+
+
+def _require_details_editor(ticket: Ticket, actor: User, what: str) -> None:
+    """Gate for editing customer/address details: Admin/Manager or the assigned
+    engineer, and only before the ticket is CLOSED (a closed ticket is signed
+    off and baked into the resolution PDF)."""
+    is_staff = actor.role in ADMIN_MANAGER_ROLES
+    if not is_staff and ticket.assigned_engineer_id != actor.id:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Only Admin/Manager or the assigned engineer can edit the {what}",
+        )
+    if ticket.status == TicketStatus.CLOSED.value:
+        raise HTTPException(
+            status_code=409,
+            detail=f"The {what} can't be changed after the ticket is closed.",
+        )
+
+
+def update_ticket_customer(db: Session, ticket: Ticket, actor: User, data: dict) -> Ticket:
+    """Correct the customer / contact details. `data` carries already-validated
+    fields (business_name, contact_name, phone, email, business_type,
+    contact_person_profile); blank optional fields arrive as None."""
+    _require_details_editor(ticket, actor, "customer details")
+    for field in (
+        "business_name", "contact_name", "phone", "email",
+        "business_type", "contact_person_profile",
+    ):
+        setattr(ticket, field, data.get(field))
+    _log_event(
+        db, ticket=ticket, actor=actor, event_type="CUSTOMER_UPDATED",
+        payload={"business_name": ticket.business_name, "contact_name": ticket.contact_name},
+    )
+    db.commit()
+    db.refresh(ticket)
+    logger.info("Ticket %s customer details updated by %s", ticket.reference, actor.username)
+    return ticket
+
+
+def update_ticket_address(db: Session, ticket: Ticket, actor: User, data: dict) -> Ticket:
+    """Correct the site address / location. `data` carries already-validated
+    fields (line1..3, city, state, pincode, latitude, longitude); blank optional
+    fields arrive as None."""
+    _require_details_editor(ticket, actor, "address")
+    for field in (
+        "address_line1", "address_line2", "address_line3",
+        "city", "state", "pincode", "latitude", "longitude",
+    ):
+        setattr(ticket, field, data.get(field))
+    _log_event(
+        db, ticket=ticket, actor=actor, event_type="ADDRESS_UPDATED",
+        payload={"city": ticket.city, "state": ticket.state, "pincode": ticket.pincode},
+    )
+    db.commit()
+    db.refresh(ticket)
+    logger.info("Ticket %s address updated by %s", ticket.reference, actor.username)
+    return ticket

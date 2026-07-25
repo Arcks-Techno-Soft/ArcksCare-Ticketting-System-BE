@@ -173,6 +173,79 @@ class TicketCreate(BaseModel):
         return v
 
 
+class TicketCustomerUpdate(BaseModel):
+    """Editable customer / contact details. Admin/Manager or the assignee may
+    correct these until the ticket is CLOSED. Serial number and the device/issue
+    fields are intentionally NOT here — those identify the device and drive
+    dedup, so they stay fixed. Mirrors the customer half of TicketCreate,
+    reusing the same normalisers."""
+
+    business_name: str = Field(min_length=2, max_length=200)
+    contact_name: str = Field(min_length=2, max_length=120)
+    phone: str = Field(min_length=10, max_length=20)
+    email: Optional[EmailStr] = None
+    business_type: str = Field(min_length=2, max_length=60)
+    contact_person_profile: Optional[str] = Field(default=None, max_length=60)
+
+    @field_validator("business_type")
+    @classmethod
+    def _clean_business_type(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 2:
+            raise ValueError("Tell us your business category")
+        return v
+
+    @field_validator("phone")
+    @classmethod
+    def _normalise_phone(cls, v: str) -> str:
+        # Same rule as TicketCreate: 10-digit Indian mobile, strip +91 / 0 trunk.
+        digits = "".join(ch for ch in v if ch.isdigit())
+        if len(digits) == 12 and digits.startswith("91"):
+            digits = digits[2:]
+        elif len(digits) == 11 and digits.startswith("0"):
+            digits = digits[1:]
+        if len(digits) != 10 or digits[0] not in "6789":
+            raise ValueError("Enter a valid 10-digit mobile number")
+        return digits
+
+    @field_validator("email", "contact_person_profile", mode="before")
+    @classmethod
+    def _empty_string_to_none(cls, v):
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+
+class TicketAddressUpdate(BaseModel):
+    """Editable site address / location. Admin/Manager or the assignee may
+    correct these until the ticket is CLOSED. Mirrors the address half of
+    TicketCreate (and InstallationAddressUpdate)."""
+
+    address_line1: str = Field(min_length=3, max_length=200)
+    address_line2: Optional[str] = Field(default=None, max_length=200)
+    address_line3: Optional[str] = Field(default=None, max_length=200)
+    city: str = Field(min_length=2, max_length=80)
+    state: str = Field(min_length=2, max_length=80)
+    pincode: str = Field(min_length=4, max_length=10)
+    latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+
+    @field_validator("pincode")
+    @classmethod
+    def _normalise_pincode(cls, v: str) -> str:
+        cleaned = "".join(ch for ch in v if ch.isdigit())
+        if len(cleaned) < 4:
+            raise ValueError("Enter a valid pincode")
+        return cleaned
+
+    @field_validator("address_line2", "address_line3", mode="before")
+    @classmethod
+    def _empty_string_to_none(cls, v):
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+
 class AttachmentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -208,6 +281,7 @@ class TicketResponse(BaseModel):
     business_name: str
     contact_name: str
     contact_person_profile: Optional[str] = None
+    business_type: Optional[str] = None
     email: Optional[EmailStr] = None
     phone: str
     address_line1: str

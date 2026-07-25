@@ -23,6 +23,7 @@ from ..schemas.installation import (
     InstallationAddressUpdate,
     InstallationAssignRequest,
     InstallationCreate,
+    InstallationCustomerUpdate,
     InstallationEventOut,
     InstallationInvoiceUpdate,
     InstallationListItem,
@@ -54,6 +55,7 @@ from ..services.installation_workflow import (
     set_invoice_document,
     start_attempt,
     update_address,
+    update_customer,
     update_invoice,
 )
 from ..services.storage import get_storage, save_document
@@ -409,6 +411,20 @@ def update_address_endpoint(
     """Edit the site address / location. Assignee / Admin / Manager, before CLOSED."""
     inst = _load(db, reference)
     return update_address(db, inst, user, body.model_dump())
+
+
+# --------------------------- customer ----------------------------------- #
+
+@router.patch("/{reference}/customer", response_model=InstallationOut)
+def update_customer_endpoint(
+    reference: str,
+    body: InstallationCustomerUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Edit the customer / contact details. Assignee / Admin / Manager, before CLOSED."""
+    inst = _load(db, reference)
+    return update_customer(db, inst, user, body.model_dump())
 
 
 # --------------------------- notes -------------------------------------- #

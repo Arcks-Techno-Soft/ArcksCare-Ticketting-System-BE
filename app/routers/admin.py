@@ -64,6 +64,8 @@ from ..schemas.ticket import (
     ClosePreviewOut,
     ShipmentCreate,
     ShipmentOut,
+    TicketAddressUpdate,
+    TicketCustomerUpdate,
     TicketListItem,
     TicketListPage,
     TicketResponse,
@@ -100,6 +102,8 @@ from ..services.ticket_workflow import (
     start_attempt,
     start_work,
     update_severity,
+    update_ticket_address,
+    update_ticket_customer,
     update_warranty,
 )
 
@@ -867,6 +871,33 @@ def patch_third_party_info(
         body.third_party_issue_info,
         body.third_party_ticket_ref,
     )
+
+
+@router.patch("/tickets/{reference}/customer", response_model=TicketResponse)
+def patch_ticket_customer(
+    reference: str,
+    body: TicketCustomerUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Correct the customer / contact details (business name, contact, phone,
+    email, business type, contact person). Admin/Manager or the assigned
+    engineer, editable until the ticket is CLOSED."""
+    ticket = _load_ticket(db, reference, user)
+    return update_ticket_customer(db, ticket, user, body.model_dump())
+
+
+@router.patch("/tickets/{reference}/address", response_model=TicketResponse)
+def patch_ticket_address(
+    reference: str,
+    body: TicketAddressUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Correct the site address / location. Admin/Manager or the assigned
+    engineer, editable until the ticket is CLOSED."""
+    ticket = _load_ticket(db, reference, user)
+    return update_ticket_address(db, ticket, user, body.model_dump())
 
 
 # --------------------------- engineer actions --------------------------- #
