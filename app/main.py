@@ -101,6 +101,7 @@ def _bootstrap_db() -> None:
     from .services.ticket_workflow import ensure_worknote_attempt_column
     from .services.installation_workflow import (
         ensure_installation_address_columns,
+        ensure_installation_expected_date_columns,
         ensure_installation_invoice_document_columns,
         ensure_installation_note_attempt_column,
         ensure_installation_products_column,
@@ -130,6 +131,7 @@ def _bootstrap_db() -> None:
     ensure_installation_products_column(engine)
     ensure_installation_sales_rep_column(engine)
     ensure_installation_address_columns(engine)
+    ensure_installation_expected_date_columns(engine)
     ensure_installation_resolution_photo_columns(engine)
     # Work-attempt FK columns on the existing notes tables (the attempt tables
     # themselves are created by create_all below).
@@ -164,6 +166,13 @@ def _bootstrap_db() -> None:
     # services/reminders.py.
     from .services.reminders import start_reminder_scheduler
     start_reminder_scheduler()
+
+    # Start the upcoming-installation reminder loop (no-op unless
+    # INSTALL_REMINDER_SCHEDULER_ENABLED=true). WhatsApps Super Admin / Admin /
+    # Managers ahead of an installation's expected date. Separate daemon thread;
+    # see services/installation_reminders.py.
+    from .services.installation_reminders import start_installation_reminder_scheduler
+    start_installation_reminder_scheduler()
 
 
 @app.get("/")

@@ -10,11 +10,21 @@ Lifecycle: NEW → ASSIGNED → COMPLETED → CLOSED
   COMPLETED — engineer hit "Close": work done, awaiting signatures
   CLOSED    — both signatures captured, PDF generated
 """
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from typing import List, Optional
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    JSON,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..database import Base
@@ -41,6 +51,20 @@ class Installation(Base):
     email: Mapped[Optional[str]] = mapped_column(String(200), nullable=True, index=True)
 
     invoice_number: Mapped[str] = mapped_column(String(80), index=True)
+
+    # Date the installation is expected to happen on site. Optional — captured
+    # on the new-installation form and editable afterwards. Drives the upcoming-
+    # installation WhatsApp reminder to Super Admin / Admin / Managers (see
+    # services/installation_reminders.py). Nullable so rows that pre-date the
+    # feature stay valid.
+    expected_installation_date: Mapped[Optional[date]] = mapped_column(
+        Date, nullable=True, index=True
+    )
+    # Stamped once the "upcoming installation" reminder has gone out, so the
+    # scheduler never double-sends. Cleared whenever the expected date changes.
+    expected_date_reminder_sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Free-text list of products to install (one per line, name + quantity).
     # Mandatory at the API for new installations; nullable in the DB so the

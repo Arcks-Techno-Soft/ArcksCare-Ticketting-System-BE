@@ -171,6 +171,35 @@ def ensure_installation_note_attempt_column(engine: Engine) -> None:
         )
 
 
+def ensure_installation_expected_date_columns(engine: Engine) -> None:
+    """Add installations.expected_installation_date + its reminder marker.
+
+    `expected_installation_date` is the date the job is planned for on site;
+    `expected_date_reminder_sent_at` records that the upcoming-installation
+    WhatsApp reminder already fired, so the scheduler never double-sends.
+    Idempotent — `create_all` doesn't add columns to existing tables, so we
+    ALTER directly. Both nullable, so rows that pre-date the feature stay valid.
+    """
+    insp = inspect(engine)
+    if "installations" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # Fresh DB — create_all will include the columns.
+    existing = {c["name"] for c in insp.get_columns("installations", schema=MIGRATION_SCHEMA)}
+    # SQLite has no TIMESTAMPTZ; DATE is spelled the same on both.
+    ts_type = "TIMESTAMP" if engine.dialect.name == "sqlite" else "TIMESTAMPTZ"
+    cols = {
+        "expected_installation_date": "DATE",
+        "expected_date_reminder_sent_at": ts_type,
+    }
+    missing = {k: v for k, v in cols.items() if k not in existing}
+    if not missing:
+        return
+    with engine.begin() as conn:
+        for name, ddl in missing.items():
+            conn.execute(
+                text(f"ALTER TABLE {qualify('installations')} ADD COLUMN {name} {ddl}")
+            )
+
+
 def _log_event(
     db: Session,
     *,
