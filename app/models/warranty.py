@@ -60,6 +60,15 @@ class Warranty(Base):
     # the user may want to jot down).
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Where the row came from: NULL = registered by staff through the UI,
+    # "ZOHO_IMPORT" = loaded by scripts/import_zoho_warranties.py from the
+    # historical Zoho sales export. Indexed so the import's rollback
+    # (DELETE WHERE source='ZOHO_IMPORT') never touches manual rows.
+    source: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, index=True)
+    # Buyer from the invoice — useful context when a serial is looked up years
+    # after the sale. Only populated by the import today.
+    customer_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+
     created_by_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("users.id"), nullable=True, index=True
     )

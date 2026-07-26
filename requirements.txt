@@ -21,3 +21,7 @@ PyJWT==2.9.0
 # PDF generation (Phase 2.4+): resolution document with embedded signatures.
 reportlab==4.2.5
 Pillow>=10.4
+
+# Legacy .xls reader — used only by scripts/import_zoho_warranties.py to read
+# the historical Zoho invoice exports (openpyxl handles .xlsx, not .xls).
+xlrd==2.0.2
