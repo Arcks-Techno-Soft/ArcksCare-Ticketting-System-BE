@@ -1,5 +1,5 @@
 """Pydantic schemas for the installation endpoints."""
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -46,6 +46,9 @@ class InstallationCreate(InstallationAddressUpdate):
     invoice_number: str = Field(min_length=1, max_length=80)
     # Products to install — free text, one per line (name + quantity). Required.
     products_for_installation: str = Field(min_length=2, max_length=4000)
+    # Optional date the installation is planned for on site. Drives the
+    # upcoming-installation WhatsApp reminder to Super Admin/Admin/Managers.
+    expected_installation_date: Optional[date] = None
     # Optional initial assignment. If supplied, the installation is created
     # already ASSIGNED to this user (engineer / self-assign).
     assigned_engineer_id: Optional[int] = None
@@ -64,6 +67,14 @@ class InstallationCreate(InstallationAddressUpdate):
     @field_validator("email", mode="before")
     @classmethod
     def _empty_email_to_none(cls, v):
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+    @field_validator("expected_installation_date", mode="before")
+    @classmethod
+    def _empty_date_to_none(cls, v):
+        # The form posts "" when the user leaves the date picker blank.
         if isinstance(v, str) and not v.strip():
             return None
         return v
@@ -110,6 +121,19 @@ class InstallationCustomerUpdate(BaseModel):
 
 class InstallationInvoiceUpdate(BaseModel):
     invoice_number: str = Field(min_length=1, max_length=80)
+
+
+class InstallationExpectedDateUpdate(BaseModel):
+    """Set or clear the planned on-site date. Pass null to clear it."""
+
+    expected_installation_date: Optional[date] = None
+
+    @field_validator("expected_installation_date", mode="before")
+    @classmethod
+    def _empty_date_to_none(cls, v):
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
 
 class InstallationSalesRepUpdate(BaseModel):
@@ -241,6 +265,7 @@ class InstallationOut(BaseModel):
     email: Optional[str] = None
     invoice_number: str
     products_for_installation: Optional[str] = None
+    expected_installation_date: Optional[date] = None
     invoice_document: Optional[InstallationInvoiceDocumentOut] = None
     status: str
 
@@ -278,6 +303,7 @@ class InstallationListItem(BaseModel):
     contact_name: str
     phone: str
     invoice_number: str
+    expected_installation_date: Optional[date] = None
     status: str
     city: Optional[str] = None
     state: Optional[str] = None

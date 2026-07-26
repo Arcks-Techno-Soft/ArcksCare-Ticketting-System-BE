@@ -135,6 +135,27 @@ class Settings(BaseSettings):
     twilio_ticket_sales_rep_assign_content_sid: str = Field(default="")
     twilio_ticket_sales_rep_closed_content_sid: str = Field(default="")
 
+    # --- Upcoming-installation reminder ------------------------------------
+    # WhatsApps Super Admin / Admin / Managers ahead of an installation's
+    # `expected_installation_date`. Independent of the SLA reminder scheduler
+    # above so either can run alone. See services/installation_reminders.py.
+    # Master switch — off by default so the app boots unchanged.
+    install_reminder_scheduler_enabled: bool = Field(default=False)
+    # How often the background loop wakes up (seconds). This is a date-based
+    # reminder, so a slow tick is plenty — 15 min by default.
+    install_reminder_tick_seconds: int = Field(default=900)
+    # How many days ahead of the expected date the reminder goes out.
+    install_reminder_days_before: int = Field(default=2)
+    # Don't message before this local hour (24h, in `install_reminder_timezone`),
+    # so a late-night create can't wake everyone up. 9 = from 9 AM onwards.
+    install_reminder_send_after_hour: int = Field(default=9)
+    # IANA timezone the dates and the send-hour window are evaluated in.
+    install_reminder_timezone: str = Field(default="Asia/Kolkata")
+    # Approved content-template SID for the reminder. Its {{1}}..{{5}} vars must
+    # be: reference, customer, expected-date, when-phrase, engineer.
+    # Blank -> plain-text body (works with the Twilio Sandbox only).
+    twilio_install_upcoming_content_sid: str = Field(default="")
+
     @field_validator("cors_origins")
     @classmethod
     def _strip_origins(cls, v: str) -> str:

@@ -25,6 +25,7 @@ from ..schemas.installation import (
     InstallationCreate,
     InstallationCustomerUpdate,
     InstallationEventOut,
+    InstallationExpectedDateUpdate,
     InstallationInvoiceUpdate,
     InstallationListItem,
     InstallationListPage,
@@ -226,6 +227,7 @@ def create_installation(
         email=(body.email or "").strip().lower() or None,
         invoice_number=body.invoice_number.strip(),
         products_for_installation=body.products_for_installation.strip(),
+        expected_installation_date=body.expected_installation_date,
         address_line1=body.address_line1.strip(),
         address_line2=body.address_line2,
         address_line3=body.address_line3,
@@ -251,6 +253,11 @@ def create_installation(
             payload={
                 "business_name": inst.business_name,
                 "invoice_number": inst.invoice_number,
+                "expected_installation_date": (
+                    inst.expected_installation_date.isoformat()
+                    if inst.expected_installation_date
+                    else None
+                ),
             },
         )
     )
@@ -366,6 +373,49 @@ def update_sales_rep_endpoint(
         and inst.sales_rep_id != user.id
     ):
         notify_sales_rep_assigned(inst.id)
+    return inst
+
+
+# --------------------------- expected date ------------------------------ #
+
+@router.patch("/{reference}/expected-date", response_model=InstallationOut)
+def update_expected_date_endpoint(
+    reference: str,
+    body: InstallationExpectedDateUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Set, change, or clear the expected on-site installation date.
+
+    Admin / Manager only. Changing the date resets the upcoming-installation
+    reminder marker, so the new date gets its own heads-up to leadership.
+    """
+    _require_owner_or_manager(user)
+    inst = _load(db, reference)
+    prev = inst.expected_installation_date
+    new = body.expected_installation_date
+    if new == prev:
+        return inst
+    inst.expected_installation_date = new
+    # A moved date is a fresh commitment — let the reminder fire again.
+    inst.expected_date_reminder_sent_at = None
+    db.add(
+        InstallationEvent(
+            installation_id=inst.id,
+            actor_user_id=user.id,
+            event_type="EXPECTED_DATE_SET",
+            payload={
+                "from": prev.isoformat() if prev else None,
+                "to": new.isoformat() if new else None,
+            },
+        )
+    )
+    db.commit()
+    db.refresh(inst)
+    logger.info(
+        "Installation %s expected date %s -> %s by %s",
+        inst.reference, prev, new, user.username,
+    )
     return inst
 
 
