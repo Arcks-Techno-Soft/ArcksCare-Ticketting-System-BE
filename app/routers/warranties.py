@@ -53,6 +53,29 @@ def ensure_warranty_invoice_number_column(engine: Engine) -> None:
             text(f"ALTER TABLE {qualify('warranties')} ADD COLUMN invoice_number VARCHAR(120)")
         )
 
+
+def ensure_warranty_source_columns(engine: Engine) -> None:
+    """Add warranties.source / warranties.customer_name if they're missing.
+
+    Both are nullable so every pre-existing (manually registered) row stays
+    valid with `source IS NULL`. The historical Zoho import stamps its rows
+    with source='ZOHO_IMPORT', which is what makes its rollback safe. Same
+    idempotent, DB_SCHEMA-scoped shape as the migration above.
+    """
+    insp = inspect(engine)
+    if "warranties" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # Fresh DB — create_all will include the columns.
+    existing = {c["name"] for c in insp.get_columns("warranties", schema=MIGRATION_SCHEMA)}
+    cols = {"source": "VARCHAR(20)", "customer_name": "VARCHAR(200)"}
+    missing = {k: v for k, v in cols.items() if k not in existing}
+    if not missing:
+        return
+    with engine.begin() as conn:
+        for name, ddl in missing.items():
+            conn.execute(
+                text(f"ALTER TABLE {qualify('warranties')} ADD COLUMN {name} {ddl}")
+            )
+
 router = APIRouter(prefix="/api/v1/admin/warranties", tags=["warranties"])
 
 

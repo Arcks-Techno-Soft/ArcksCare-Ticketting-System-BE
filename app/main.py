@@ -137,6 +137,8 @@ def _bootstrap_db() -> None:
     ensure_installation_note_attempt_column(engine)
     # Warranty invoice-number column on any pre-existing warranties table.
     warranties_router.ensure_warranty_invoice_number_column(engine)
+    # Provenance columns used by the historical Zoho warranty import.
+    warranties_router.ensure_warranty_source_columns(engine)
     Base.metadata.create_all(bind=engine)
     # One-time, idempotent: fold pre-attempts work notes into a synthetic
     # ended attempt so they remain visible under the new attempts UI. Must run

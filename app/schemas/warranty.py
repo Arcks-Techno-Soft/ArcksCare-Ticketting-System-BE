@@ -106,6 +106,10 @@ class WarrantyOut(BaseModel):
     expiry_date: date
     is_active: bool
     notes: Optional[str]
+    # NULL for manual registrations; "ZOHO_IMPORT" for historical rows loaded
+    # by scripts/import_zoho_warranties.py (the UI badges those).
+    source: Optional[str] = None
+    customer_name: Optional[str] = None
     created_by: Optional[UserOut]
     created_at: datetime
 
