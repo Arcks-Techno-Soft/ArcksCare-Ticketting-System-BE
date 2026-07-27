@@ -6,6 +6,7 @@ acknowledge / assign / warranty actions, plus engineer + event listing.
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -309,6 +310,21 @@ def get_ticket_report(
 
 # --------------------------- lookups ------------------------------------ #
 
+# What still counts as "on the engineer's plate" for the assign picker.
+# RESOLVED tickets and COMPLETED installations are deliberately excluded: the
+# field work is finished and only the customer signature + PDF remain, so the
+# engineer is free to take the next job. Anything CLOSED is done outright.
+OPEN_TICKET_STATUSES = (
+    TicketStatus.ASSIGNED.value,
+    TicketStatus.ACCEPTED.value,
+    TicketStatus.RESOLVING.value,
+)
+OPEN_INSTALLATION_STATUSES = (
+    InstallationStatus.NEW.value,
+    InstallationStatus.ASSIGNED.value,
+)
+
+
 @router.get("/engineers", response_model=List[EngineerOption])
 def list_engineers(
     include_sales_reps: bool = Query(default=False),
@@ -316,8 +332,12 @@ def list_engineers(
     _user: User = Depends(get_current_user),
 ):
     """Active engineers for the 'assign to' picker, each annotated with their
-    current open workload (open tickets + pending installations) so the UI can
-    recommend the least-busy ones.
+    current open workload so the UI can recommend the least-busy ones.
+
+    Workload is returned split — `open_service_call_count` (tickets) and
+    `open_installation_count` — with `open_ticket_count` carrying the total,
+    so a picker can show "13 open jobs (SC-7 / INS-6)". Only jobs still
+    needing field work count; see OPEN_TICKET_STATUSES above.
 
     Managers are included too: they sometimes work complaints/installations
     themselves, so Admin/Owner and Managers may assign to a Manager as well as
@@ -340,23 +360,38 @@ def list_engineers(
         .order_by(User.name)
         .all()
     )
-    # Per-engineer count of active (not CLOSED, not deleted) assigned tickets.
-    ticket_counts = dict(
-        db.query(Ticket.assigned_engineer_id, func.count(Ticket.id))
+    # Per-engineer set of open service-call (ticket) ids. A SET because the
+    # same ticket can reach a user down two paths — primary assignee and
+    # additional engineer — and must still count as one job.
+    open_ticket_ids: dict[int, set[int]] = defaultdict(set)
+    for user_id, ticket_id in (
+        db.query(Ticket.assigned_engineer_id, Ticket.id)
         .filter(
             Ticket.assigned_engineer_id.isnot(None),
-            Ticket.status != TicketStatus.CLOSED.value,
+            Ticket.status.in_(OPEN_TICKET_STATUSES),
             Ticket.deleted_at.is_(None),
         )
-        .group_by(Ticket.assigned_engineer_id)
         .all()
-    )
-    # Per-engineer count of pending (not CLOSED) assigned installations.
+    ):
+        open_ticket_ids[user_id].add(ticket_id)
+    # Co-engineers attend the same site visit, so the job sits on their plate
+    # too even though they don't drive the workflow.
+    for user_id, ticket_id in (
+        db.query(TicketEngineer.engineer_id, TicketEngineer.ticket_id)
+        .join(Ticket, Ticket.id == TicketEngineer.ticket_id)
+        .filter(
+            Ticket.status.in_(OPEN_TICKET_STATUSES),
+            Ticket.deleted_at.is_(None),
+        )
+        .all()
+    ):
+        open_ticket_ids[user_id].add(ticket_id)
+    # Per-engineer count of installations still needing the visit.
     install_counts = dict(
         db.query(Installation.assigned_engineer_id, func.count(Installation.id))
         .filter(
             Installation.assigned_engineer_id.isnot(None),
-            Installation.status != InstallationStatus.CLOSED.value,
+            Installation.status.in_(OPEN_INSTALLATION_STATUSES),
         )
         .group_by(Installation.assigned_engineer_id)
         .all()
@@ -364,8 +399,10 @@ def list_engineers(
     out: List[EngineerOption] = []
     for u in engineers:
         item = EngineerOption.model_validate(u)
-        item.open_ticket_count = int(ticket_counts.get(u.id, 0)) + int(
-            install_counts.get(u.id, 0)
+        item.open_service_call_count = len(open_ticket_ids.get(u.id, ()))
+        item.open_installation_count = int(install_counts.get(u.id, 0))
+        item.open_ticket_count = (
+            item.open_service_call_count + item.open_installation_count
         )
         out.append(item)
     return out
