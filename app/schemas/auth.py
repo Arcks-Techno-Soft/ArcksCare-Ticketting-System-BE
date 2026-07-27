@@ -33,11 +33,21 @@ class EngineerOption(UserOut):
     """An engineer for the 'assign to' picker, annotated with their current
     workload so the UI can surface the least-busy (and recommend free) ones.
 
-    `open_ticket_count` = open workload assigned to this engineer: active
-    tickets (not CLOSED, not soft-deleted) plus pending installations (not
-    CLOSED) — i.e. what's currently on their plate.
+    Workload counts only jobs still needing field work — a RESOLVED ticket or
+    a COMPLETED installation is finished bar the customer signature and the
+    PDF, so it no longer occupies the engineer:
+
+    * `open_service_call_count` — tickets in ASSIGNED / ACCEPTED / RESOLVING
+      (not soft-deleted) where the user is the primary assignee OR an
+      additional (co-)engineer. Counted once per ticket either way.
+    * `open_installation_count` — installations in NEW / ASSIGNED.
+    * `open_ticket_count` — the two added together. Kept under its original
+      name so existing clients keep reading the total from the same field;
+      the pickers show it as "N open jobs (SC-x / INS-y)".
     """
 
+    open_service_call_count: int = 0
+    open_installation_count: int = 0
     open_ticket_count: int = 0
 
 
