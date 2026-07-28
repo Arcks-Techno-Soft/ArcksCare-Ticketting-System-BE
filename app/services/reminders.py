@@ -16,6 +16,11 @@ All three are capped at ``settings.reminder_cap`` (default 5) reminders per
 ticket per stage. After the cap the ticket goes silent — surface it in the
 open-backlog view instead of continuing to ping.
 
+Tickets on hold are skipped entirely: the wait is deliberate, so nudging
+leadership about it every 10 minutes is pure noise. Reminder progress is left
+untouched while held, so a resumed ticket picks its cadence back up rather
+than starting over.
+
 How it runs: a daemon thread (started from the FastAPI startup hook) wakes up
 every ``reminder_tick_seconds`` and calls :func:`run_reminder_tick`, which is
 itself a plain, side-effect-contained function you can also invoke directly
@@ -282,6 +287,7 @@ def run_reminder_tick() -> int:
             db.query(Ticket)
             .filter(Ticket.status == TicketStatus.OPEN.value)
             .filter(Ticket.deleted_at.is_(None))
+            .filter(Ticket.held_at.is_(None))
             .all()
         )
         total += _process_stage(
@@ -300,6 +306,7 @@ def run_reminder_tick() -> int:
             db.query(Ticket)
             .filter(Ticket.status == TicketStatus.ACKNOWLEDGED.value)
             .filter(Ticket.deleted_at.is_(None))
+            .filter(Ticket.held_at.is_(None))
             .all()
         )
         total += _process_stage(
@@ -318,6 +325,7 @@ def run_reminder_tick() -> int:
             db.query(Ticket)
             .filter(Ticket.status == TicketStatus.ASSIGNED.value)
             .filter(Ticket.deleted_at.is_(None))
+            .filter(Ticket.held_at.is_(None))
             .all()
         )
         total += _process_stage(

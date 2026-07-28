@@ -338,6 +338,14 @@ class TicketResponse(BaseModel):
     # Sales rep credited with this service call (view-only for the rep).
     sales_rep: Optional[UserOut] = None
 
+
+    # On hold — an overlay on `status`, so `status` still reads ASSIGNED /
+    # RESOLVING / etc. while parked. `on_hold` is the flag the UIs gate on.
+    on_hold: bool = False
+    held_at: Optional[datetime] = None
+    held_by: Optional[UserOut] = None
+    hold_reason: Optional[str] = None
+
     # Resolution context (Phase 2.3+)
     accepted_at: Optional[datetime] = None
     resolving_started_at: Optional[datetime] = None
@@ -416,6 +424,9 @@ class TicketListItem(BaseModel):
     raised_by: Optional[UserOut] = None
     assigned_engineer: Optional[UserOut] = None
     sales_rep: Optional[UserOut] = None
+    # On-hold overlay — the inbox renders a badge next to the status pill.
+    on_hold: bool = False
+    hold_reason: Optional[str] = None
     created_at: datetime
 
 

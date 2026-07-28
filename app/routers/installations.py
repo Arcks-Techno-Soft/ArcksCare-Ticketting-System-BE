@@ -36,6 +36,8 @@ from ..schemas.installation import (
 )
 from ..schemas.auth import (
     AddSubEngineerRequest,
+    HoldRequest,
+    ResumeRequest,
     SubEngineerOut,
     SubEngineerRosterOut,
     UpdateSubEngineerFeeRequest,
@@ -52,7 +54,9 @@ from ..services.installation_workflow import (
     assign,
     close_installation,
     end_attempt,
+    hold,
     remove_invoice_document,
+    resume,
     set_invoice_document,
     start_attempt,
     update_address,
@@ -125,6 +129,10 @@ def list_installations(
     # Manager/Admin can count installations assigned to *them* (e.g. for the
     # "waiting on me" tab badge) without being scoped like an engineer.
     assigned_engineer_id: Optional[int] = Query(default=None, ge=1),
+    # Hold filter. None = show everything (held rows included, badged); true =
+    # only held; false = only live. Separate from `status` because hold is an
+    # overlay, not a status.
+    on_hold: Optional[bool] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -147,6 +155,10 @@ def list_installations(
         q = q.filter(Installation.status == status.upper())
     if assigned_engineer_id:
         q = q.filter(Installation.assigned_engineer_id == assigned_engineer_id)
+    if on_hold is not None:
+        q = q.filter(
+            Installation.held_at.isnot(None) if on_hold else Installation.held_at.is_(None)
+        )
     if created_within_days:
         cutoff = datetime.now(timezone.utc) - timedelta(days=created_within_days)
         q = q.filter(Installation.created_at >= cutoff)
@@ -329,6 +341,38 @@ def self_assign_endpoint(
     inst = _load(db, reference)
     inst, _ = assign(db, inst, user, user.id)
     return inst
+
+
+# --------------------------- hold / resume ------------------------------- #
+
+@router.post("/{reference}/hold", response_model=InstallationOut)
+def hold_endpoint(
+    reference: str,
+    body: HoldRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Manager/Admin/Owner: park an installation indefinitely (reason required).
+
+    Status and assignee are left alone — the job just stops counting toward the
+    engineer's open jobs, goes quiet on the upcoming-installation reminder, and
+    refuses workflow actions until it's resumed.
+    """
+    inst = _load(db, reference)
+    return hold(db, inst, user, body.reason)
+
+
+@router.post("/{reference}/resume", response_model=InstallationOut)
+def resume_endpoint(
+    reference: str,
+    body: Optional[ResumeRequest] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Manager/Admin/Owner: lift a hold and put the installation back on the
+    engineer's plate, exactly where it left off."""
+    inst = _load(db, reference)
+    return resume(db, inst, user, body.note if body else None)
 
 
 # --------------------------- invoice ------------------------------------ #

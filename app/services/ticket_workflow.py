@@ -92,12 +92,30 @@ def _require_status(ticket: Ticket, allowed: set[str]) -> None:
         )
 
 
+def _require_not_held(ticket: Ticket) -> None:
+    """Block a workflow action while the ticket is parked.
+
+    Hold is an overlay on `status`, so every transition has to check it
+    separately from _require_status. Work notes are deliberately exempt — the
+    reason a ticket is waiting usually needs recording while it waits.
+    """
+    if ticket.held_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This ticket is on hold. A Manager or Admin must resume it "
+                "before any further action."
+            ),
+        )
+
+
 # --------------------------- transitions --------------------------------- #
 
 def acknowledge(db: Session, ticket: Ticket, actor: User) -> Ticket:
     """OPEN → ACKNOWLEDGED. Manager/Admin only."""
     if actor.role not in ADMIN_MANAGER_ROLES:
         raise HTTPException(status_code=403, detail="Only Manager or Admin can acknowledge")
+    _require_not_held(ticket)
     _require_status(ticket, {TicketStatus.OPEN.value})
     prev = ticket.status
     ticket.status = TicketStatus.ACKNOWLEDGED.value
@@ -124,6 +142,7 @@ def assign_engineer(db: Session, ticket: Ticket, actor: User, engineer_id: int) 
     """
     if actor.role not in ADMIN_MANAGER_ROLES:
         raise HTTPException(status_code=403, detail="Only Manager or Admin can assign")
+    _require_not_held(ticket)
 
     engineer = db.query(User).filter(User.id == engineer_id).one_or_none()
     if engineer is None or not engineer.active:
@@ -219,6 +238,7 @@ def add_engineer(
 
     if actor.role not in ADMIN_MANAGER_ROLES:
         raise HTTPException(status_code=403, detail="Only Manager or Admin can add an engineer")
+    _require_not_held(ticket)
 
     # A primary engineer must already be assigned — additional engineers are
     # helpers on top of a real assignment, not a way to assign the first one.
@@ -279,6 +299,7 @@ def remove_engineer(db: Session, ticket: Ticket, actor: User, engineer_id: int) 
 
     if actor.role not in ADMIN_MANAGER_ROLES:
         raise HTTPException(status_code=403, detail="Only Manager or Admin can remove an engineer")
+    _require_not_held(ticket)
 
     link = (
         db.query(TicketEngineer)
@@ -544,6 +565,107 @@ def soft_delete_ticket(db: Session, ticket: Ticket, actor: User, reason: str) ->
     return ticket
 
 
+# --------------------------- hold / resume ------------------------------- #
+
+# A ticket can only be parked while field work is still outstanding. RESOLVED
+# is excluded on purpose: the visit is done and only the signature + PDF
+# remain, so there is nothing left to pause — and it already doesn't count
+# toward the engineer's open jobs.
+HOLDABLE_TICKET_STATUSES = {
+    TicketStatus.OPEN.value,
+    TicketStatus.ACKNOWLEDGED.value,
+    TicketStatus.ASSIGNED.value,
+    TicketStatus.ACCEPTED.value,
+    TicketStatus.RESOLVING.value,
+}
+
+
+def hold(db: Session, ticket: Ticket, actor: User, reason: str) -> Ticket:
+    """Park a ticket indefinitely. Manager/Admin/Owner only.
+
+    `status` is left untouched — hold is an overlay — so resume() puts the
+    ticket back exactly where it stopped. The assignee is kept, but the ticket
+    drops out of their open-job count and stops the SLA reminders and breach
+    clock for as long as it's held. Repeatable: hold → resume → hold again,
+    with every cycle recorded in the event log.
+    """
+    if actor.role not in ADMIN_MANAGER_ROLES:
+        raise HTTPException(
+            status_code=403, detail="Only Manager or Admin can put a ticket on hold"
+        )
+    if ticket.held_at is not None:
+        raise HTTPException(status_code=409, detail="This ticket is already on hold.")
+    _require_status(ticket, HOLDABLE_TICKET_STATUSES)
+
+    reason = (reason or "").strip()
+    if not reason:
+        raise HTTPException(
+            status_code=400, detail="A reason is required to put a ticket on hold."
+        )
+
+    # Same rule as reassignment: an attempt in flight would be silently
+    # orphaned by the freeze, so the engineer has to close it out first.
+    open_attempt = _open_attempt(db, ticket)
+    if open_attempt is not None:
+        engineer_name = (
+            ticket.assigned_engineer.name
+            if ticket.assigned_engineer is not None
+            else "The assigned engineer"
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{engineer_name} has an open work attempt "
+                f"(#{open_attempt.attempt_number}) on this ticket. Ask them to end "
+                "it before putting the ticket on hold."
+            ),
+        )
+
+    ticket.held_at = datetime.now(timezone.utc)
+    ticket.held_by_id = actor.id
+    ticket.hold_reason = reason
+    _log_event(
+        db, ticket=ticket, actor=actor, event_type="HELD",
+        payload={"reason": reason},
+        note=reason,
+    )
+    db.commit()
+    db.refresh(ticket)
+    logger.info(
+        "Ticket %s put on hold by %s (%s)", ticket.reference, actor.username, reason
+    )
+    return ticket
+
+
+def resume(db: Session, ticket: Ticket, actor: User, note: Optional[str] = None) -> Ticket:
+    """Lift a hold and hand the ticket back to whoever it was assigned to.
+
+    Nothing is restored because nothing was changed — clearing the hold
+    columns is the whole operation.
+    """
+    if actor.role not in ADMIN_MANAGER_ROLES:
+        raise HTTPException(
+            status_code=403, detail="Only Manager or Admin can resume a ticket"
+        )
+    if ticket.held_at is None:
+        raise HTTPException(status_code=409, detail="This ticket is not on hold.")
+
+    note = (note or "").strip() or None
+    held_since = ticket.held_at
+    ticket.held_at = None
+    ticket.held_by_id = None
+    ticket.hold_reason = None
+    _log_event(
+        db, ticket=ticket, actor=actor, event_type="RESUMED",
+        payload={"held_since": held_since.isoformat() if held_since else None},
+        note=note,
+    )
+    db.commit()
+    db.refresh(ticket)
+    logger.info("Ticket %s resumed by %s", ticket.reference, actor.username)
+    return ticket
+
+
 # --------------------------- assignee transitions ----------------------- #
 
 def _require_assignee(ticket: Ticket, actor: User) -> None:
@@ -564,6 +686,7 @@ _require_assigned_engineer = _require_assignee
 def accept(db: Session, ticket: Ticket, actor: User) -> Ticket:
     """ASSIGNED → ACCEPTED. Only the assigned engineer."""
     _require_assignee(ticket, actor)
+    _require_not_held(ticket)
     _require_status(ticket, {TicketStatus.ASSIGNED.value})
     prev = ticket.status
     ticket.status = TicketStatus.ACCEPTED.value
@@ -581,6 +704,7 @@ def accept(db: Session, ticket: Ticket, actor: User) -> Ticket:
 def start_work(db: Session, ticket: Ticket, actor: User) -> Ticket:
     """ACCEPTED → RESOLVING. Only the assigned engineer."""
     _require_assignee(ticket, actor)
+    _require_not_held(ticket)
     _require_status(ticket, {TicketStatus.ACCEPTED.value})
     prev = ticket.status
     ticket.status = TicketStatus.RESOLVING.value
@@ -676,6 +800,7 @@ def start_attempt(db: Session, ticket: Ticket, actor: User) -> TicketAttempt:
     tap. Only one attempt may be open at a time.
     """
     _require_assignee(ticket, actor)
+    _require_not_held(ticket)
     _require_status(ticket, {TicketStatus.ACCEPTED.value, TicketStatus.RESOLVING.value})
 
     # First attempt auto-starts work (ACCEPTED → RESOLVING).
@@ -757,6 +882,7 @@ def resolve(db: Session, ticket: Ticket, actor: User, summary: str) -> tuple[Tic
     from .signing import create_resolution_with_token  # noqa: WPS433
 
     _require_assignee(ticket, actor)
+    _require_not_held(ticket)
     _require_status(ticket, {TicketStatus.RESOLVING.value})
 
     if _open_attempt(db, ticket) is not None:

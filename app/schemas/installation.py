@@ -285,6 +285,14 @@ class InstallationOut(BaseModel):
     assigned_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
+
+    # On hold — an overlay on `status`, so `status` still reads NEW/ASSIGNED
+    # while parked. `on_hold` is the flag the UIs gate on.
+    on_hold: bool = False
+    held_at: Optional[datetime] = None
+    held_by: Optional[UserOut] = None
+    hold_reason: Optional[str] = None
+
     created_at: datetime
 
     resolution: Optional[InstallationResolutionOut] = None
@@ -310,6 +318,9 @@ class InstallationListItem(BaseModel):
     created_by: Optional[UserOut] = None
     assigned_engineer: Optional[UserOut] = None
     sales_rep: Optional[UserOut] = None
+    # On-hold overlay — the list renders a badge next to the status pill.
+    on_hold: bool = False
+    hold_reason: Optional[str] = None
     created_at: datetime
 
 

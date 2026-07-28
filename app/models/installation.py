@@ -113,6 +113,15 @@ class Installation(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # On hold — Manager/Admin/Owner only. An overlay on `status`, NOT a status
+    # of its own: the installation keeps its stage, so resuming just clears
+    # these columns. While held it is frozen (notes still allowed), drops out
+    # of the engineer's open-job count, and stops the upcoming-installation
+    # reminders. Hold/resume history lives in the event log (HELD / RESUMED).
+    held_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    held_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    hold_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
@@ -159,6 +168,15 @@ class Installation(Base):
     assigned_engineer: Mapped[Optional["User"]] = relationship(
         foreign_keys=[assigned_engineer_id], lazy="joined"
     )
+    held_by: Mapped[Optional["User"]] = relationship(
+        foreign_keys=[held_by_id], lazy="joined"
+    )
+
+    @property
+    def on_hold(self) -> bool:
+        """True while the installation is parked. Derived so the API and every
+        guard read the same thing rather than each testing `held_at`."""
+        return self.held_at is not None
 
     @property
     def invoice_document(self) -> Optional[dict]:
