@@ -44,7 +44,14 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
         TicketStatus.ACCEPTED.value,
         TicketStatus.RESOLVING.value,
     }
-    open_count = sum(1 for t in all_tickets if t.status in open_statuses)
+    # Held tickets keep their status, so they'd otherwise inflate "Open" with
+    # work nobody can act on. They get their own card instead.
+    open_count = sum(
+        1 for t in all_tickets if t.status in open_statuses and t.held_at is None
+    )
+    on_hold_count = sum(
+        1 for t in all_tickets if t.status in open_statuses and t.held_at is not None
+    )
     resolved_count = sum(1 for t in all_tickets if t.status == TicketStatus.RESOLVED.value)
     closed_count = sum(1 for t in all_tickets if t.status == TicketStatus.CLOSED.value)
 
@@ -190,6 +197,7 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
         "kpis": {
             "total_tickets": total,
             "open_tickets": open_count,
+            "on_hold_tickets": on_hold_count,
             "resolved_tickets": resolved_count,
             "closed_tickets": closed_count,
             "window_tickets": len(window_tickets),

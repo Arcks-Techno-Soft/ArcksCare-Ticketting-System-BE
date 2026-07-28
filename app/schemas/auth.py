@@ -37,10 +37,13 @@ class EngineerOption(UserOut):
     a COMPLETED installation is finished bar the customer signature and the
     PDF, so it no longer occupies the engineer:
 
+    Jobs on hold are excluded from both counts as well — the engineer can't act
+    on a parked job, so it must not make them look busy.
+
     * `open_service_call_count` — tickets in ASSIGNED / ACCEPTED / RESOLVING
-      (not soft-deleted) where the user is the primary assignee OR an
-      additional (co-)engineer. Counted once per ticket either way.
-    * `open_installation_count` — installations in NEW / ASSIGNED.
+      (not soft-deleted, not on hold) where the user is the primary assignee OR
+      an additional (co-)engineer. Counted once per ticket either way.
+    * `open_installation_count` — installations in NEW / ASSIGNED, not on hold.
     * `open_ticket_count` — the two added together. Kept under its original
       name so existing clients keep reading the total from the same field;
       the pickers show it as "N open jobs (SC-x / INS-y)".
@@ -133,6 +136,17 @@ class ForceCloseRequest(BaseModel):
 class DeleteTicketRequest(BaseModel):
     # Soft-delete reason is optional but recorded when provided.
     reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class HoldRequest(BaseModel):
+    # Manager/Admin parks a ticket or installation. Reason is mandatory — it's
+    # what the inbox badge and the audit trail show.
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class ResumeRequest(BaseModel):
+    # Lifting a hold needs no reason; an optional note lands in the event log.
+    note: Optional[str] = Field(default=None, max_length=500)
 
 
 class UpdateWarrantyRequest(BaseModel):

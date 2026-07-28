@@ -50,7 +50,8 @@ from .whatsapp import (
 
 logger = logging.getLogger("skposcare.installation_reminders")
 
-# Statuses still worth a heads-up. COMPLETED/CLOSED are done deals.
+# Statuses still worth a heads-up. COMPLETED/CLOSED are done deals; held
+# installations are filtered out separately (they keep their status).
 _PENDING_STATUSES = (
     InstallationStatus.NEW.value,
     InstallationStatus.ASSIGNED.value,
@@ -178,6 +179,10 @@ def run_installation_reminder_tick() -> int:
             .filter(Installation.expected_installation_date >= today)
             .filter(Installation.expected_date_reminder_sent_at.is_(None))
             .filter(Installation.status.in_(_PENDING_STATUSES))
+            # A held installation isn't happening on its expected date, so the
+            # "installation tomorrow" nudge would be wrong. The marker is left
+            # unset, so resuming it before the date still sends the reminder.
+            .filter(Installation.held_at.is_(None))
             .all()
         )
         if not due:

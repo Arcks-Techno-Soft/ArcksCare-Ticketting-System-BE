@@ -200,6 +200,28 @@ def ensure_installation_expected_date_columns(engine: Engine) -> None:
             )
 
 
+def ensure_installation_hold_columns(engine: Engine) -> None:
+    """Add installations.held_at / held_by_id / hold_reason if missing.
+
+    Idempotent ALTER. Existing rows get NULL — i.e. not on hold — so nothing
+    changes for live installations.
+    """
+    insp = inspect(engine)
+    if "installations" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # Fresh DB — create_all will include the columns.
+    existing = {c["name"] for c in insp.get_columns("installations", schema=MIGRATION_SCHEMA)}
+    ts_type = "TIMESTAMP" if engine.dialect.name == "sqlite" else "TIMESTAMPTZ"
+    cols = {"held_at": ts_type, "held_by_id": "INTEGER", "hold_reason": "TEXT"}
+    missing = {k: v for k, v in cols.items() if k not in existing}
+    if not missing:
+        return
+    with engine.begin() as conn:
+        for name, ddl in missing.items():
+            conn.execute(
+                text(f"ALTER TABLE {qualify('installations')} ADD COLUMN {name} {ddl}")
+            )
+
+
 def _log_event(
     db: Session,
     *,
@@ -243,6 +265,115 @@ def _require_assignee(installation: Installation, actor: User) -> None:
         )
 
 
+def _require_not_held(installation: Installation) -> None:
+    """Block a workflow action while the installation is parked.
+
+    Hold is an overlay on `status`, so every transition has to check it
+    separately from _require_status. Notes are deliberately exempt.
+    """
+    if installation.held_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This installation is on hold. A Manager or Admin must resume it "
+                "before any further action."
+            ),
+        )
+
+
+# --------------------------- hold / resume ------------------------------- #
+
+# Only jobs with the visit still outstanding can be parked. COMPLETED is
+# excluded: the work is done and only signatures + PDF remain.
+HOLDABLE_INSTALLATION_STATUSES = {
+    InstallationStatus.NEW.value,
+    InstallationStatus.ASSIGNED.value,
+}
+
+
+def hold(db: Session, installation: Installation, actor: User, reason: str) -> Installation:
+    """Park an installation indefinitely. Manager/Admin/Owner only.
+
+    `status` is left untouched — hold is an overlay — so resume() puts it back
+    exactly where it stopped. The assignee is kept but the job drops out of
+    their open-job count, and the upcoming-installation reminders go quiet.
+    """
+    if actor.role not in ADMIN_MANAGER_ROLES:
+        raise HTTPException(
+            status_code=403, detail="Only Manager or Admin can put an installation on hold"
+        )
+    if installation.held_at is not None:
+        raise HTTPException(status_code=409, detail="This installation is already on hold.")
+    _require_status(installation, HOLDABLE_INSTALLATION_STATUSES)
+
+    reason = (reason or "").strip()
+    if not reason:
+        raise HTTPException(
+            status_code=400, detail="A reason is required to put an installation on hold."
+        )
+
+    # An attempt in flight would be silently orphaned by the freeze.
+    open_attempt = _open_attempt(db, installation)
+    if open_attempt is not None:
+        engineer_name = (
+            installation.assigned_engineer.name
+            if installation.assigned_engineer is not None
+            else "The assigned engineer"
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{engineer_name} has an open work attempt "
+                f"(#{open_attempt.attempt_number}) on this installation. Ask them to "
+                "end it before putting the installation on hold."
+            ),
+        )
+
+    installation.held_at = datetime.now(timezone.utc)
+    installation.held_by_id = actor.id
+    installation.hold_reason = reason
+    _log_event(
+        db, installation=installation, actor=actor, event_type="HELD",
+        payload={"reason": reason},
+        note=reason,
+    )
+    db.commit()
+    db.refresh(installation)
+    logger.info(
+        "Installation %s put on hold by %s (%s)",
+        installation.reference, actor.username, reason,
+    )
+    return installation
+
+
+def resume(
+    db: Session, installation: Installation, actor: User, note: Optional[str] = None
+) -> Installation:
+    """Lift a hold. Nothing needs restoring — clearing the columns is the whole
+    operation, and the job returns to its original assignee."""
+    if actor.role not in ADMIN_MANAGER_ROLES:
+        raise HTTPException(
+            status_code=403, detail="Only Manager or Admin can resume an installation"
+        )
+    if installation.held_at is None:
+        raise HTTPException(status_code=409, detail="This installation is not on hold.")
+
+    note = (note or "").strip() or None
+    held_since = installation.held_at
+    installation.held_at = None
+    installation.held_by_id = None
+    installation.hold_reason = None
+    _log_event(
+        db, installation=installation, actor=actor, event_type="RESUMED",
+        payload={"held_since": held_since.isoformat() if held_since else None},
+        note=note,
+    )
+    db.commit()
+    db.refresh(installation)
+    logger.info("Installation %s resumed by %s", installation.reference, actor.username)
+    return installation
+
+
 # --------------------------- transitions --------------------------------- #
 
 def assign(db: Session, installation: Installation, actor: User, engineer_id: int) -> tuple[Installation, User]:
@@ -254,6 +385,7 @@ def assign(db: Session, installation: Installation, actor: User, engineer_id: in
     if engineer is None or not engineer.active:
         raise HTTPException(status_code=400, detail="Invalid assignee")
 
+    _require_not_held(installation)
     _require_status(installation, {InstallationStatus.NEW.value, InstallationStatus.ASSIGNED.value})
 
     prev_status = installation.status
@@ -594,6 +726,7 @@ def start_attempt(db: Session, installation: Installation, actor: User) -> Insta
             status_code=403,
             detail="Only the assignee, Admin, or Manager can start an attempt",
         )
+    _require_not_held(installation)
     _require_status(installation, {InstallationStatus.ASSIGNED.value})
     if _open_attempt(db, installation) is not None:
         raise HTTPException(
@@ -666,6 +799,7 @@ def close_installation(db: Session, installation: Installation, actor: User) -> 
     from .installation_signing import create_resolution_with_token  # noqa: WPS433
 
     _require_assignee(installation, actor)
+    _require_not_held(installation)
     _require_status(installation, {InstallationStatus.ASSIGNED.value})
 
     if _open_attempt(db, installation) is not None:

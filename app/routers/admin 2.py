@@ -6,7 +6,6 @@ acknowledge / assign / warranty actions, plus engineer + event listing.
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -38,15 +37,12 @@ from ..schemas.auth import (
     CreateUserResponse,
     DeleteTicketRequest,
     ForceCloseRequest,
-    HoldRequest,
     RegisterPushTokenRequest,
-    ResumeRequest,
     ResolveRequest,
     SpareCatalogItem,
     SubEngineerOut,
     SubEngineerRosterOut,
     TicketEventOut,
-    TicketSalesRepUpdate,
     TicketSpareOut,
     UpdateRosterSubEngineerRequest,
     UpdateServiceTypeRequest,
@@ -67,8 +63,6 @@ from ..schemas.ticket import (
     ClosePreviewOut,
     ShipmentCreate,
     ShipmentOut,
-    TicketAddressUpdate,
-    TicketCustomerUpdate,
     TicketListItem,
     TicketListPage,
     TicketResponse,
@@ -79,7 +73,6 @@ from ..services.auth import get_current_user, hash_password, require_role
 from ..services.email import send_engineer_assignment
 from ..services.push import notify_ticket_assigned, register_token, unregister_token
 from ..services.whatsapp import send_engineer_assignment_alert
-from ..services.ticket_notify import notify_sales_rep_assigned as notify_ticket_sales_rep_assigned
 from ..services.signing import (
     generate_field_sign_link,
     record_customer_signature_via_engineer,
@@ -97,18 +90,14 @@ from ..services.ticket_workflow import (
     compute_close_pending,
     end_attempt,
     force_close,
-    hold,
     remove_engineer,
     resolve,
-    resume,
     set_service_type,
     set_third_party_info,
     soft_delete_ticket,
     start_attempt,
     start_work,
     update_severity,
-    update_ticket_address,
-    update_ticket_customer,
     update_warranty,
 )
 
@@ -314,23 +303,6 @@ def get_ticket_report(
 
 # --------------------------- lookups ------------------------------------ #
 
-# What still counts as "on the engineer's plate" for the assign picker.
-# RESOLVED tickets and COMPLETED installations are deliberately excluded: the
-# field work is finished and only the customer signature + PDF remain, so the
-# engineer is free to take the next job. Anything CLOSED is done outright.
-# Jobs on hold are excluded too (see the held_at filters below) — the engineer
-# can't act on them, so they mustn't make them look busy.
-OPEN_TICKET_STATUSES = (
-    TicketStatus.ASSIGNED.value,
-    TicketStatus.ACCEPTED.value,
-    TicketStatus.RESOLVING.value,
-)
-OPEN_INSTALLATION_STATUSES = (
-    InstallationStatus.NEW.value,
-    InstallationStatus.ASSIGNED.value,
-)
-
-
 @router.get("/engineers", response_model=List[EngineerOption])
 def list_engineers(
     include_sales_reps: bool = Query(default=False),
@@ -338,12 +310,8 @@ def list_engineers(
     _user: User = Depends(get_current_user),
 ):
     """Active engineers for the 'assign to' picker, each annotated with their
-    current open workload so the UI can recommend the least-busy ones.
-
-    Workload is returned split — `open_service_call_count` (tickets) and
-    `open_installation_count` — with `open_ticket_count` carrying the total,
-    so a picker can show "13 open jobs (SC-7 / INS-6)". Only jobs still
-    needing field work count; see OPEN_TICKET_STATUSES above.
+    current open workload (open tickets + pending installations) so the UI can
+    recommend the least-busy ones.
 
     Managers are included too: they sometimes work complaints/installations
     themselves, so Admin/Owner and Managers may assign to a Manager as well as
@@ -366,41 +334,23 @@ def list_engineers(
         .order_by(User.name)
         .all()
     )
-    # Per-engineer set of open service-call (ticket) ids. A SET because the
-    # same ticket can reach a user down two paths — primary assignee and
-    # additional engineer — and must still count as one job.
-    open_ticket_ids: dict[int, set[int]] = defaultdict(set)
-    for user_id, ticket_id in (
-        db.query(Ticket.assigned_engineer_id, Ticket.id)
+    # Per-engineer count of active (not CLOSED, not deleted) assigned tickets.
+    ticket_counts = dict(
+        db.query(Ticket.assigned_engineer_id, func.count(Ticket.id))
         .filter(
             Ticket.assigned_engineer_id.isnot(None),
-            Ticket.status.in_(OPEN_TICKET_STATUSES),
+            Ticket.status != TicketStatus.CLOSED.value,
             Ticket.deleted_at.is_(None),
-            Ticket.held_at.is_(None),
         )
+        .group_by(Ticket.assigned_engineer_id)
         .all()
-    ):
-        open_ticket_ids[user_id].add(ticket_id)
-    # Co-engineers attend the same site visit, so the job sits on their plate
-    # too even though they don't drive the workflow.
-    for user_id, ticket_id in (
-        db.query(TicketEngineer.engineer_id, TicketEngineer.ticket_id)
-        .join(Ticket, Ticket.id == TicketEngineer.ticket_id)
-        .filter(
-            Ticket.status.in_(OPEN_TICKET_STATUSES),
-            Ticket.deleted_at.is_(None),
-            Ticket.held_at.is_(None),
-        )
-        .all()
-    ):
-        open_ticket_ids[user_id].add(ticket_id)
-    # Per-engineer count of installations still needing the visit.
+    )
+    # Per-engineer count of pending (not CLOSED) assigned installations.
     install_counts = dict(
         db.query(Installation.assigned_engineer_id, func.count(Installation.id))
         .filter(
             Installation.assigned_engineer_id.isnot(None),
-            Installation.status.in_(OPEN_INSTALLATION_STATUSES),
-            Installation.held_at.is_(None),
+            Installation.status != InstallationStatus.CLOSED.value,
         )
         .group_by(Installation.assigned_engineer_id)
         .all()
@@ -408,10 +358,8 @@ def list_engineers(
     out: List[EngineerOption] = []
     for u in engineers:
         item = EngineerOption.model_validate(u)
-        item.open_service_call_count = len(open_ticket_ids.get(u.id, ()))
-        item.open_installation_count = int(install_counts.get(u.id, 0))
-        item.open_ticket_count = (
-            item.open_service_call_count + item.open_installation_count
+        item.open_ticket_count = int(ticket_counts.get(u.id, 0)) + int(
+            install_counts.get(u.id, 0)
         )
         out.append(item)
     return out
@@ -434,13 +382,7 @@ def list_businesses(db: Session = Depends(get_db), user: User = Depends(get_curr
             or_(Ticket.assigned_engineer_id == user.id, Ticket.id.in_(additional))
         )
     elif user.role == UserRole.SALES.value:
-        q = q.filter(
-            or_(
-                Ticket.raised_by_id == user.id,
-                Ticket.sales_rep_id == user.id,
-                Ticket.assigned_engineer_id == user.id,
-            )
-        )
+        q = q.filter(Ticket.raised_by_id == user.id)
     rows = q.distinct().order_by(Ticket.business_name).all()
     return [r[0] for r in rows if r[0]]
 
@@ -480,10 +422,6 @@ def list_tickets(
     assigned_engineer_id: Optional[int] = Query(default=None, ge=1),
     # Narrow the inbox to one business (the "Business" sort view). Exact match.
     business_name: Optional[str] = Query(default=None),
-    # Hold filter. None = show everything (held rows included, badged); true =
-    # only held; false = only live. Kept separate from `status` because hold is
-    # an overlay, not a status.
-    on_hold: Optional[bool] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -500,15 +438,10 @@ def list_tickets(
             or_(Ticket.assigned_engineer_id == user.id, Ticket.id.in_(additional))
         )
     elif user.role == UserRole.SALES.value:
-        # Sales reps see tickets they raised OR that they're credited on as the
-        # sales rep (view-only). The assigned_engineer_id clause preserves
-        # visibility of any ticket credited via the older assignment path.
+        # Sales reps see tickets they raised OR that are assigned to them (a
+        # service call can now be assigned to a sales rep).
         q = q.filter(
-            or_(
-                Ticket.raised_by_id == user.id,
-                Ticket.sales_rep_id == user.id,
-                Ticket.assigned_engineer_id == user.id,
-            )
+            or_(Ticket.raised_by_id == user.id, Ticket.assigned_engineer_id == user.id)
         )
     if status:
         q = q.filter(Ticket.status == status.upper())
@@ -520,10 +453,6 @@ def list_tickets(
         q = q.filter(Ticket.assigned_engineer_id == assigned_engineer_id)
     if business_name:
         q = q.filter(Ticket.business_name == business_name)
-    if on_hold is not None:
-        q = q.filter(
-            Ticket.held_at.isnot(None) if on_hold else Ticket.held_at.is_(None)
-        )
     if created_within_days:
         cutoff = datetime.now(timezone.utc) - timedelta(days=created_within_days)
         q = q.filter(Ticket.created_at >= cutoff)
@@ -629,11 +558,7 @@ def ticket_status_counts(
         )
     elif user.role == UserRole.SALES.value:
         q = q.filter(
-            or_(
-                Ticket.raised_by_id == user.id,
-                Ticket.sales_rep_id == user.id,
-                Ticket.assigned_engineer_id == user.id,
-            )
+            or_(Ticket.raised_by_id == user.id, Ticket.assigned_engineer_id == user.id)
         )
     if severity:
         q = q.filter(Ticket.severity == severity.upper())
@@ -735,55 +660,6 @@ def self_assign_ticket(
     return ticket
 
 
-@router.patch("/tickets/{reference}/sales-rep", response_model=TicketResponse)
-def update_ticket_sales_rep(
-    reference: str,
-    body: TicketSalesRepUpdate,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    """Set, change, or clear the sales rep credited with this service call.
-
-    Admin / Manager only. Editable until the ticket is CLOSED. The credited rep
-    is view-only — being set here lets them see the ticket (list + detail) but
-    grants no actions on it. Passing ``sales_rep_id: null`` clears the credit.
-    """
-    if user.role not in ADMIN_MANAGER_ROLES:
-        raise HTTPException(
-            status_code=403, detail="Only Admin or Manager can assign a sales rep"
-        )
-    ticket = _load_ticket(db, reference, user)
-    if ticket.status == "CLOSED":
-        raise HTTPException(
-            status_code=409,
-            detail="Ticket is closed — the sales rep can no longer be changed.",
-        )
-    prev_rep_id = ticket.sales_rep_id
-    if body.sales_rep_id is None:
-        ticket.sales_rep_id = None
-    else:
-        rep = db.query(User).filter(User.id == body.sales_rep_id).one_or_none()
-        # A valid rep is an active SALES-role user, or anyone flagged
-        # is_sales_rep (e.g. a Manager who also does sales) — same rule the
-        # installations endpoint enforces.
-        if rep is None or not rep.active or not (
-            rep.role == UserRole.SALES.value or bool(rep.is_sales_rep)
-        ):
-            raise HTTPException(status_code=400, detail="Invalid sales representative")
-        ticket.sales_rep_id = rep.id
-    db.commit()
-    db.refresh(ticket)
-    # Alert only when a new, different rep was credited, and not when a manager
-    # credits themselves.
-    if (
-        ticket.sales_rep_id is not None
-        and ticket.sales_rep_id != prev_rep_id
-        and ticket.sales_rep_id != user.id
-    ):
-        notify_ticket_sales_rep_assigned(ticket.id)
-    return ticket
-
-
 @router.post("/tickets/{reference}/engineers", response_model=TicketResponse)
 def add_ticket_engineer(
     reference: str,
@@ -844,36 +720,6 @@ def force_close_ticket(
     """Admin/Owner override: close a ticket from ANY status (reason required)."""
     ticket = _load_ticket(db, reference, user)
     return force_close(db, ticket, user, body.reason)
-
-
-@router.post("/tickets/{reference}/hold", response_model=TicketResponse)
-def hold_ticket(
-    reference: str,
-    body: HoldRequest,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    """Manager/Admin/Owner: park a ticket indefinitely (reason required).
-
-    The status and the assignee are left alone — the ticket simply stops
-    counting toward the engineer's open jobs, goes quiet on SLA reminders, and
-    refuses workflow actions until it's resumed.
-    """
-    ticket = _load_ticket(db, reference, user)
-    return hold(db, ticket, user, body.reason)
-
-
-@router.post("/tickets/{reference}/resume", response_model=TicketResponse)
-def resume_ticket(
-    reference: str,
-    body: Optional[ResumeRequest] = None,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    """Manager/Admin/Owner: lift a hold and put the ticket back on the
-    engineer's plate, exactly where it left off."""
-    ticket = _load_ticket(db, reference, user)
-    return resume(db, ticket, user, body.note if body else None)
 
 
 @router.post("/tickets/{reference}/collect-payment", response_model=TicketResponse)
@@ -955,33 +801,6 @@ def patch_third_party_info(
         body.third_party_issue_info,
         body.third_party_ticket_ref,
     )
-
-
-@router.patch("/tickets/{reference}/customer", response_model=TicketResponse)
-def patch_ticket_customer(
-    reference: str,
-    body: TicketCustomerUpdate,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    """Correct the customer / contact details (business name, contact, phone,
-    email, business type, contact person). Admin/Manager or the assigned
-    engineer, editable until the ticket is CLOSED."""
-    ticket = _load_ticket(db, reference, user)
-    return update_ticket_customer(db, ticket, user, body.model_dump())
-
-
-@router.patch("/tickets/{reference}/address", response_model=TicketResponse)
-def patch_ticket_address(
-    reference: str,
-    body: TicketAddressUpdate,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    """Correct the site address / location. Admin/Manager or the assigned
-    engineer, editable until the ticket is CLOSED."""
-    ticket = _load_ticket(db, reference, user)
-    return update_ticket_address(db, ticket, user, body.model_dump())
 
 
 # --------------------------- engineer actions --------------------------- #
@@ -1227,22 +1046,33 @@ def regenerate_resolution_pdf(
     Preserves the original storage key (so existing references to the file
     remain valid) and bumps `pdf_generated_at` to the current time.
     """
+    from datetime import datetime, timezone  # local — module-level import already covers timedelta
+
+    from ..services.pdf_generator import generate_resolution_pdf  # avoid module-load cost when unused
+
     if user.role not in ADMIN_MANAGER_ROLES:
         raise HTTPException(status_code=403, detail="Manager or Admin only")
     ticket = _load_ticket(db, reference, user)
+    res = ticket.resolution
     # Need both signatures so the regenerated PDF carries the same legal
     # weight as the original; we never want a "draft-looking" PDF replacing
     # a fully-signed one.
-    if not _rerender_resolution_pdf(db, ticket):
+    if res is None or res.customer_signed_at is None or res.engineer_signed_at is None:
         raise HTTPException(
             status_code=409,
             detail="Can only regenerate after both signatures are in place.",
         )
-    res = ticket.resolution
-    logger.info("Regenerated PDF for %s by %s", ticket.reference, user.username)
 
+    pdf_bytes = generate_resolution_pdf(ticket, res)
     storage = get_storage()
     filename = f"resolution-{ticket.reference}.pdf"
+    meta = storage.save_bytes(pdf_bytes, "application/pdf", ticket.reference, filename)
+    res.pdf_storage_key = meta["storage_url"]
+    res.pdf_generated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(res)
+    logger.info("Regenerated PDF for %s by %s", ticket.reference, user.username)
+
     url = storage.public_url(res.pdf_storage_key)
     if not url.startswith("http"):
         url = f"http://localhost:8000{url}"
@@ -1679,13 +1509,12 @@ def _can_manage_charges(ticket: Ticket, user: User) -> bool:
     """Who may touch the invoice (spares + service fee) right now.
 
     A Super Admin is exempt from the freeze above: they may correct the
-    figures at ANY status, including after the ticket is CLOSED — a
-    post-close billing correction. Everyone else is held to the RESOLVING
-    window. After such an edit the resolution PDF is regenerated so the
-    signed document keeps matching the corrected invoice.
+    figures any time before the ticket is CLOSED, including after RESOLVED
+    when the customer has already signed. Regenerate the resolution PDF
+    afterwards so the signed document matches the corrected invoice.
     """
     if user.role in SUPER_ADMIN_ROLES:
-        return True
+        return ticket.status != "CLOSED"
     return _can_manage_spares(ticket, user)
 
 
@@ -1785,7 +1614,6 @@ def add_ticket_spare(
         "Added spare '%s' x%d to %s by %s",
         spare.name, spare.quantity, ticket.reference, user.username,
     )
-    _sync_charges_pdf(db, ticket, user)
     return spare
 
 
@@ -1814,7 +1642,6 @@ def update_ticket_spare(
         spare.quantity = int(body.quantity)
     db.commit()
     db.refresh(spare)
-    _sync_charges_pdf(db, ticket, user)
     return spare
 
 
@@ -1837,7 +1664,6 @@ def remove_ticket_spare(
         raise HTTPException(status_code=404, detail="Spare not found")
     db.delete(spare)
     db.commit()
-    _sync_charges_pdf(db, ticket, user)
     return None
 
 
@@ -1851,9 +1677,12 @@ def update_service_fee(
     ticket = _load_ticket(db, reference, user)
     new_fee = int(body.service_fee_inr)
     is_super_admin = user.role in SUPER_ADMIN_ROLES
-    # A Super Admin may edit charges at any status (including CLOSED); everyone
-    # else is held to the RESOLVING window by _can_manage_charges.
     if not _can_manage_charges(ticket, user):
+        if is_super_admin:
+            raise HTTPException(
+                status_code=403,
+                detail="Ticket is closed — charges can no longer be edited.",
+            )
         raise HTTPException(status_code=403, detail="Not allowed to edit charges on this ticket")
     # Out-of-warranty tickets carry a per-service-type minimum charge. Anyone
     # who can edit charges may set it at/above that floor; only a Super Admin
@@ -1870,7 +1699,6 @@ def update_service_fee(
     ticket.service_fee_inr = new_fee
     db.commit()
     db.refresh(ticket)
-    _sync_charges_pdf(db, ticket, user)
     return compute_charges(ticket)
 
 
@@ -2100,14 +1928,12 @@ def _load_ticket(
         and not any(ae.engineer_id == user.id for ae in t.additional_engineers)
     ):
         raise HTTPException(status_code=404, detail="Ticket not found")
-    # Sales reps can open tickets they raised themselves or that they're
-    # credited on as the sales rep (view-only — visibility, not the right to
-    # act). The assigned_engineer_id clause preserves the older assignment path.
+    # Sales reps can open tickets they raised themselves or that are assigned to
+    # them (a service call can now be assigned to a sales rep).
     if (
         user is not None
         and user.role == UserRole.SALES.value
         and t.raised_by_id != user.id
-        and t.sales_rep_id != user.id
         and t.assigned_engineer_id != user.id
     ):
         raise HTTPException(status_code=404, detail="Ticket not found")

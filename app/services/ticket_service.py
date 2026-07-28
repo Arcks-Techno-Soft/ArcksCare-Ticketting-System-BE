@@ -95,6 +95,26 @@ def ensure_ticket_soft_delete_columns(engine: Engine) -> None:
         if "deleted_by_id" not in existing:
             conn.execute(text(f"ALTER TABLE {qualify('tickets')} ADD COLUMN deleted_by_id INTEGER"))
 
+
+def ensure_ticket_hold_columns(engine: Engine) -> None:
+    """Add tickets.held_at / held_by_id / hold_reason if missing.
+
+    Idempotent ALTER, same pattern as the soft-delete columns. Existing rows
+    get NULL — i.e. not on hold — so nothing changes for live tickets.
+    """
+    insp = inspect(engine)
+    if "tickets" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # Fresh DB — create_all will include the columns.
+    existing = {c["name"] for c in insp.get_columns("tickets", schema=MIGRATION_SCHEMA)}
+    with engine.begin() as conn:
+        if "held_at" not in existing:
+            conn.execute(text(f"ALTER TABLE {qualify('tickets')} ADD COLUMN held_at TIMESTAMP"))
+        if "held_by_id" not in existing:
+            conn.execute(text(f"ALTER TABLE {qualify('tickets')} ADD COLUMN held_by_id INTEGER"))
+        if "hold_reason" not in existing:
+            conn.execute(text(f"ALTER TABLE {qualify('tickets')} ADD COLUMN hold_reason TEXT"))
+
+
 # Any not-yet-resolved status. New submissions for the same serial are blocked
 # while one of these exists within the dedup window.
 OPEN_STATUSES = (

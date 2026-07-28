@@ -15,6 +15,12 @@ SLA stages (thresholds in minutes; Site / Remote):
 
 A transition that hasn't completed yet is measured against *now* (a live,
 ongoing breach). Thresholds live in STAGE_DEFS so they're easy to tune.
+
+Time a ticket spent on hold is excluded from every stage it overlaps — the
+wait was a deliberate management decision, not an SLA failure — so a parked
+ticket doesn't accumulate an unbounded breach against its engineer. The hold
+windows are reconstructed from the HELD / RESUMED events, which handles a
+ticket being held and resumed repeatedly.
 """
 from __future__ import annotations
 
@@ -99,6 +105,42 @@ def _responsible(stage: int, t: Ticket, pending: bool):
     return t.assigned_engineer
 
 
+def _hold_spans(t: Ticket, now: datetime) -> List[tuple]:
+    """Every (start, end) window during which the ticket was on hold.
+
+    Reconstructed from the HELD / RESUMED event pairs rather than the
+    `held_at` column, because a ticket can be held and resumed any number of
+    times and only the log remembers the earlier cycles. A HELD with no
+    matching RESUMED is still open, so it runs to `now`.
+    """
+    spans: List[tuple] = []
+    held_from: Optional[datetime] = None
+    for e in sorted(t.events, key=lambda ev: _aware(ev.created_at) or now):
+        if e.event_type == "HELD":
+            if held_from is None:
+                held_from = _aware(e.created_at)
+        elif e.event_type == "RESUMED" and held_from is not None:
+            resumed_at = _aware(e.created_at)
+            if resumed_at is not None and resumed_at > held_from:
+                spans.append((held_from, resumed_at))
+            held_from = None
+    if held_from is not None:
+        spans.append((held_from, now))
+    return spans
+
+
+def _held_minutes(spans: List[tuple], start: datetime, end: datetime) -> float:
+    """How much of [start, end] the ticket spent on hold — the overlap of the
+    stage window with each hold span, summed."""
+    total = 0.0
+    for hold_start, hold_end in spans:
+        overlap_start = max(hold_start, start)
+        overlap_end = min(hold_end, end)
+        if overlap_end > overlap_start:
+            total += (overlap_end - overlap_start).total_seconds() / 60.0
+    return total
+
+
 def _ticket_breaches(t: Ticket, closed_at: Optional[datetime], now: datetime) -> List[Dict[str, Any]]:
     is_remote = t.service_type == ServiceType.REMOTE_SUPPORT.value
     timestamps = {
@@ -110,6 +152,10 @@ def _ticket_breaches(t: Ticket, closed_at: Optional[datetime], now: datetime) ->
         "resolved_at": _aware(t.resolved_at),
         "closed_at": closed_at,
     }
+    # Time spent on hold is nobody's SLA failure, so it's subtracted from every
+    # stage it overlaps. Without this a ticket parked for a fortnight would
+    # show a permanent, unbounded breach against its engineer.
+    hold_spans = _hold_spans(t, now)
     breaches: List[Dict[str, Any]] = []
     for d in STAGE_DEFS:
         threshold = d["remote"] if is_remote else d["site"]
@@ -120,11 +166,14 @@ def _ticket_breaches(t: Ticket, closed_at: Optional[datetime], now: datetime) ->
             continue  # ticket hasn't reached the start of this transition yet
         end = timestamps[d["end"]]
         if end is not None:
-            elapsed = (end - start).total_seconds() / 60.0
+            window_end = end
             pending = False
         else:
-            elapsed = (now - start).total_seconds() / 60.0
+            window_end = now
             pending = True
+        elapsed = (window_end - start).total_seconds() / 60.0
+        held = _held_minutes(hold_spans, start, window_end)
+        elapsed = max(0.0, elapsed - held)
         if elapsed <= threshold:
             continue
         owner = _responsible(d["stage"], t, pending)
@@ -135,6 +184,9 @@ def _ticket_breaches(t: Ticket, closed_at: Optional[datetime], now: datetime) ->
             "threshold_min": threshold,
             "elapsed_min": round(elapsed, 1),
             "overage_min": round(elapsed - threshold, 1),
+            # How much wall-clock time in this stage was excluded as hold time.
+            # Shown in the UI so a low elapsed on an old ticket makes sense.
+            "held_min": round(held, 1),
             "pending": pending,
             "responsible_name": person["name"],
             "responsible_role": person["role"],
@@ -177,6 +229,10 @@ def _row(t: Ticket, now: datetime) -> Dict[str, Any]:
         "severity": t.severity,
         "warranty_status": t.warranty_status,
         "assigned_engineer": t.assigned_engineer.name if t.assigned_engineer else None,
+        # Currently parked. Breach times below already have hold time removed,
+        # so the flag explains why an old ticket can still read as compliant.
+        "on_hold": t.held_at is not None,
+        "hold_reason": t.hold_reason,
         "created_at": _iso(t.created_at),
         "acknowledged_at": _iso(t.acknowledged_at),
         "assigned_at": _iso(t.assigned_at),

@@ -145,6 +145,16 @@ class Ticket(Base):
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     deleted_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
 
+    # On hold — Manager/Admin/Owner only. An overlay on `status`, NOT a status
+    # of its own: the ticket keeps whatever stage it was in, so resuming just
+    # clears these columns and work continues exactly where it stopped. While
+    # held the ticket is frozen (notes still allowed), drops out of the
+    # engineer's open-job count, and stops the SLA reminders + breach clock.
+    # Hold/resume history lives in the event log (HELD / RESUMED).
+    held_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    held_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    hold_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -235,9 +245,18 @@ class Ticket(Base):
     deleted_by: Mapped[Optional["User"]] = relationship(
         foreign_keys=[deleted_by_id], lazy="joined"
     )
+    held_by: Mapped[Optional["User"]] = relationship(
+        foreign_keys=[held_by_id], lazy="joined"
+    )
     payment_collected_by: Mapped[Optional["User"]] = relationship(
         foreign_keys=[payment_collected_by_id], lazy="joined"
     )
+
+    @property
+    def on_hold(self) -> bool:
+        """True while the ticket is parked. Derived so the API and every guard
+        read the same thing rather than each testing `held_at is not None`."""
+        return self.held_at is not None
 
     # --- payment gating (single source of truth; surfaced in the API too) ---
 
