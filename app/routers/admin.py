@@ -618,8 +618,17 @@ def ticket_status_counts(
     every status regardless of which one is currently selected. All other
     filters (severity, product, search, date) are applied so the counts match
     the list the user is looking at.
+
+    A held ticket is counted ONLY under `on_hold`, never under its workflow
+    status: a RESOLVING ticket put on hold moves out of the Resolving pill and
+    into the On hold one, so the pills partition the list instead of
+    double-counting it. `total` still counts every ticket, held or not — the
+    "All" pill means all.
     """
-    q = db.query(Ticket.status, func.count(Ticket.id)).filter(Ticket.deleted_at.is_(None))
+    held_flag = Ticket.held_at.isnot(None)
+    q = db.query(Ticket.status, held_flag.label("held"), func.count(Ticket.id)).filter(
+        Ticket.deleted_at.is_(None)
+    )
     # Engineers only see tickets assigned to them — as primary OR as an
     # additional engineer brought in for the same visit.
     if user.role == UserRole.ENGINEER.value:
@@ -658,9 +667,18 @@ def ticket_status_counts(
                 Ticket.serial_number.ilike(like_upper),
             )
         )
-    rows = q.group_by(Ticket.status).all()
-    by_status = {status: int(count) for status, count in rows}
-    return {"by_status": by_status, "total": sum(by_status.values())}
+    rows = q.group_by(Ticket.status, held_flag).all()
+    by_status: dict[str, int] = {}
+    on_hold = 0
+    total = 0
+    for status, held, count in rows:
+        count = int(count)
+        total += count
+        if held:
+            on_hold += count
+        else:
+            by_status[status] = by_status.get(status, 0) + count
+    return {"by_status": by_status, "on_hold": on_hold, "total": total}
 
 
 @router.get("/tickets/{reference}", response_model=TicketResponse)
