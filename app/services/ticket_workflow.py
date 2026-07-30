@@ -55,6 +55,34 @@ def ensure_worknote_attempt_column(engine: Engine) -> None:
         )
 
 
+def ensure_payment_verification_columns(engine: Engine) -> None:
+    """Add tickets.payment_verified_at / payment_verified_by_id if missing.
+
+    Backs the Admin payment-verification step. Both are nullable with no
+    backfill: an existing COLLECTED row on a CLOSED ticket is treated as
+    verified by Ticket.payment_verified, so historical data needs no rewrite.
+    Plain types (no FK constraint) keep this portable across SQLite/Postgres.
+    """
+    insp = inspect(engine)
+    if "tickets" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # Fresh DB — create_all will include the columns.
+    existing = {c["name"] for c in insp.get_columns("tickets", schema=MIGRATION_SCHEMA)}
+    wanted = {
+        "payment_verified_at": "TIMESTAMP WITH TIME ZONE"
+        if engine.dialect.name != "sqlite"
+        else "DATETIME",
+        "payment_verified_by_id": "INTEGER",
+    }
+    missing = {name: ddl for name, ddl in wanted.items() if name not in existing}
+    if not missing:
+        return
+    with engine.begin() as conn:
+        for name, ddl in missing.items():
+            conn.execute(
+                text(f"ALTER TABLE {qualify('tickets')} ADD COLUMN {name} {ddl}")
+            )
+
+
 # --------------------------- helpers ------------------------------------- #
 
 def _log_event(
@@ -347,8 +375,25 @@ def payment_required(ticket: Ticket) -> bool:
 
 def payment_blocks_close(ticket: Ticket) -> bool:
     """Thin wrapper over Ticket.payment_blocks_close — payment required but not
-    yet COLLECTED, so the ticket can't close."""
+    yet collected in full AND verified by an Admin, so the ticket can't close."""
     return ticket.payment_blocks_close
+
+
+def signoff_complete(ticket: Ticket) -> bool:
+    """Whether the work itself is signed off, ignoring payment entirely.
+
+    Remote support needs no signatures or PDF. Third-party support needs the
+    engineer signature + PDF (no customer signature). Site visits need both
+    signatures + the PDF.
+    """
+    if ticket.service_type == ServiceType.REMOTE_SUPPORT.value:
+        return True
+    res = ticket.resolution
+    if res is None or res.pdf_generated_at is None or res.engineer_signed_at is None:
+        return False
+    if ticket.service_type == ServiceType.THIRD_PARTY_SUPPORT.value:
+        return True
+    return res.customer_signed_at is not None
 
 
 def compute_close_pending(ticket: Ticket) -> list[str]:
@@ -409,7 +454,12 @@ def compute_close_pending(ticket: Ticket) -> list[str]:
     if any(sh.delivered_at is None for sh in ticket.shipments):
         pending.append("A parts shipment is not yet marked delivered")
     if payment_blocks_close(ticket):
-        pending.append("Payment not collected")
+        if ticket.amount_pending_inr > 0:
+            pending.append(
+                f"Payment not collected in full (₹{ticket.amount_pending_inr} still pending)"
+            )
+        else:
+            pending.append("Payment collected but not yet verified by an Admin")
     return pending
 
 
@@ -442,13 +492,14 @@ def force_close(db: Session, ticket: Ticket, actor: User, reason: str) -> Ticket
 
 
 def collect_payment(db: Session, ticket: Ticket, actor: User, amount_inr: int) -> Ticket:
-    """Record the payment due on a ticket and close it if it's otherwise done.
+    """Record payment collected on a ticket. This NEVER closes the ticket.
     Applies to out-of-warranty tickets and to covered tickets that have charges.
     Allowed for Admin/Owner/Manager or the assigned engineer.
 
-    If both signatures + PDF are already in place (ticket is RESOLVED), recording
-    payment closes it immediately. If the engineer hasn't signed off yet, this
-    just marks payment collected — the ticket then closes at sign-off.
+    Paying in full moves the ticket to AWAITING_VERIFICATION and leaves it
+    RESOLVED. An Admin/Super Admin then confirms the money actually arrived via
+    verify_payment(), and that is what closes the ticket. Partial payments stay
+    PENDING with a running balance.
     """
     is_staff = actor.role in ADMIN_MANAGER_ROLES
     if not (is_staff or ticket.assigned_engineer_id == actor.id):
@@ -466,7 +517,11 @@ def collect_payment(db: Session, ticket: Ticket, actor: User, amount_inr: int) -
             status_code=409,
             detail="No payment is due on this ticket.",
         )
-    if ticket.payment_status == PaymentStatus.COLLECTED.value:
+    if ticket.payment_status in (
+        PaymentStatus.COLLECTED.value,
+        PaymentStatus.AWAITING_VERIFICATION.value,
+        PaymentStatus.VERIFIED.value,
+    ):
         raise HTTPException(status_code=409, detail="Payment is already recorded in full.")
 
     # Each collection must be positive — ₹0 can't be collected. This covers the
@@ -492,7 +547,8 @@ def collect_payment(db: Session, ticket: Ticket, actor: User, amount_inr: int) -
     ticket.payment_collected_by_id = actor.id
     fully_paid = ticket.amount_pending_inr == 0
     if fully_paid:
-        ticket.payment_status = PaymentStatus.COLLECTED.value
+        # Collected in full, but NOT closed — an Admin must verify receipt first.
+        ticket.payment_status = PaymentStatus.AWAITING_VERIFICATION.value
     _log_event(
         db, ticket=ticket, actor=actor, event_type="PAYMENT_COLLECTED",
         payload={
@@ -504,43 +560,92 @@ def collect_payment(db: Session, ticket: Ticket, actor: User, amount_inr: int) -
         },
     )
 
-    # Close only when paid IN FULL and the work is otherwise complete:
-    #   - remote support: no signatures/PDF, so RESOLVED is enough;
-    #   - site visit: both signatures + PDF must be in place.
-    if fully_paid and ticket.status == TicketStatus.RESOLVED.value:
-        is_remote = ticket.service_type == ServiceType.REMOTE_SUPPORT.value
-        is_third_party = ticket.service_type == ServiceType.THIRD_PARTY_SUPPORT.value
-        res = ticket.resolution
-        # Remote: no signatures needed. Third-party: engineer signature + PDF
-        # only (no customer). Site visit: both signatures + PDF.
-        ready = is_remote or (
-            is_third_party
-            and res is not None
-            and res.engineer_signed_at is not None
-            and res.pdf_generated_at is not None
-        ) or (
-            not is_third_party
-            and res is not None
-            and res.customer_signed_at is not None
-            and res.engineer_signed_at is not None
-            and res.pdf_generated_at is not None
+    # Deliberately NO auto-close here. Paying in full only hands the ticket to
+    # an Admin for verification; verify_payment() performs the actual close.
+    if fully_paid:
+        _log_event(
+            db, ticket=ticket, actor=actor, event_type="PAYMENT_AWAITING_VERIFICATION",
+            payload={"collected_total_inr": ticket.amount_collected_inr},
+            note="Collected in full — awaiting Admin verification before close.",
         )
-        if ready:
-            prev = ticket.status
-            ticket.status = TicketStatus.CLOSED.value
-            _log_event(
-                db, ticket=ticket, actor=actor, event_type="CLOSED",
-                from_status=prev, to_status=ticket.status,
-            )
+    db.commit()
+    db.refresh(ticket)
+    logger.info(
+        "Payment ₹%s recorded for %s by %s (collected %s/%s, status=%s, payment=%s)",
+        amount_inr, ticket.reference, actor.username,
+        ticket.amount_collected_inr, ticket.amount_due_inr,
+        ticket.status, ticket.payment_status,
+    )
+    return ticket
+
+
+def verify_payment(
+    db: Session, ticket: Ticket, actor: User, note: Optional[str] = None
+) -> Ticket:
+    """Admin/Super Admin confirms the collected money actually arrived, then
+    closes the ticket if the work is otherwise signed off.
+
+    This is the only path that closes a ticket which owed money. Restricted to
+    ADMIN_ROLES (Admin / Super Admin / Owner) — deliberately NOT Manager and not
+    the engineer who collected, so the person banking the cash can't also clear
+    it. If sign-off is still outstanding the payment is marked VERIFIED and the
+    ticket stays RESOLVED; it then closes when the last signature lands.
+    """
+    if actor.role not in ADMIN_ROLES:
+        raise HTTPException(
+            status_code=403,
+            detail="Only an Admin or Super Admin can verify a payment.",
+        )
+    if ticket.payment_status is None or not payment_required(ticket):
+        raise HTTPException(
+            status_code=409,
+            detail="No payment is due on this ticket, so there's nothing to verify.",
+        )
+    if ticket.payment_verified:
+        raise HTTPException(status_code=409, detail="Payment is already verified.")
+    if ticket.amount_pending_inr > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"₹{ticket.amount_pending_inr} is still pending — collect the full "
+                "amount before verifying."
+            ),
+        )
+
+    note = (note or "").strip() or None
+    ticket.payment_status = PaymentStatus.VERIFIED.value
+    ticket.payment_verified_at = datetime.now(timezone.utc)
+    ticket.payment_verified_by_id = actor.id
+    _log_event(
+        db, ticket=ticket, actor=actor, event_type="PAYMENT_VERIFIED",
+        payload={
+            "verified_amount_inr": ticket.amount_collected_inr,
+            "collected_by": (
+                ticket.payment_collected_by.username
+                if ticket.payment_collected_by is not None
+                else None
+            ),
+        },
+        note=note,
+    )
+
+    # Verification is the last gate — close now if the work is signed off.
+    if ticket.status == TicketStatus.RESOLVED.value and signoff_complete(ticket):
+        prev = ticket.status
+        ticket.status = TicketStatus.CLOSED.value
+        _log_event(
+            db, ticket=ticket, actor=actor, event_type="CLOSED",
+            from_status=prev, to_status=ticket.status,
+            note="Closed on Admin payment verification.",
+        )
     db.commit()
     db.refresh(ticket)
     if ticket.status == TicketStatus.CLOSED.value:
         from .ticket_notify import notify_sales_rep_closed
         notify_sales_rep_closed(ticket.id)
     logger.info(
-        "Payment ₹%s recorded for %s by %s (collected %s/%s, status=%s)",
-        amount_inr, ticket.reference, actor.username,
-        ticket.amount_collected_inr, ticket.amount_due_inr, ticket.status,
+        "Payment ₹%s verified for %s by %s (status=%s)",
+        ticket.amount_collected_inr, ticket.reference, actor.username, ticket.status,
     )
     return ticket
 
@@ -920,16 +1025,21 @@ def resolve(db: Session, ticket: Ticket, actor: User, summary: str) -> tuple[Tic
 
     if is_remote:
         # No signatures / PDF for remote support. It still can't close while
-        # payment is owed — gate it the same as a site visit. With a balance
-        # due, hold the ticket in RESOLVED ("payment pending"); collect_payment
-        # closes it once paid in full. With nothing due, close in one step.
+        # money is owed OR while collected money is unverified — gate it the same
+        # as a site visit. Hold the ticket in RESOLVED until an Admin verifies
+        # payment; with nothing due at all, close in one step.
         if payment_blocks_close(ticket):
             ticket.status = TicketStatus.RESOLVED.value
+            awaiting_verification = ticket.amount_pending_inr == 0
             _log_event(
                 db, ticket=ticket, actor=actor, event_type="RESOLVED",
                 from_status=prev, to_status=ticket.status,
                 payload={"minutes_taken": mins, "service_type": ticket.service_type},
-                note="Remote support — resolved; awaiting payment before close.",
+                note=(
+                    "Remote support — resolved; awaiting Admin payment verification."
+                    if awaiting_verification
+                    else "Remote support — resolved; awaiting payment before close."
+                ),
             )
             db.commit()
             db.refresh(ticket)

@@ -309,14 +309,22 @@ class TicketResponse(BaseModel):
     third_party_ticket_ref: Optional[str] = None
 
     # Payment tracking. NULL payment_status = legacy ticket (never gated).
-    # PENDING / COLLECTED for new-flow tickets. `payment_required` is the
-    # computed gate (out-of-warranty, or covered + charges) the UIs key off so
-    # they don't re-derive the rule.
+    # PENDING / AWAITING_VERIFICATION / VERIFIED for new-flow tickets (COLLECTED
+    # on historical rows). `payment_required` is the computed gate
+    # (out-of-warranty, or covered + charges) the UIs key off so they don't
+    # re-derive the rule.
     payment_status: Optional[str] = None
     payment_required: bool = False
     payment_amount_inr: Optional[int] = None
     payment_collected_at: Optional[datetime] = None
     payment_collected_by: Optional[UserOut] = None
+    # Admin verification of the collected money. `payment_awaiting_verification`
+    # is the flag the UIs gate the "Verify payment" action on; a ticket that owed
+    # money cannot CLOSE until `payment_verified` is true.
+    payment_verified: bool = False
+    payment_awaiting_verification: bool = False
+    payment_verified_at: Optional[datetime] = None
+    payment_verified_by: Optional[UserOut] = None
     # Money breakdown for partial-payment tracking: total billable, collected so
     # far, and what's still outstanding. The ticket can only CLOSE when pending
     # reaches ₹0 (i.e. paid in full).

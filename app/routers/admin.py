@@ -61,6 +61,7 @@ from ..schemas.auth import (
     UpdateUserSalesRepRequest,
     UpdateWarrantyRequest,
     UserOut,
+    VerifyPaymentRequest,
     WorkNoteOut,
 )
 from ..schemas.ticket import (
@@ -110,6 +111,7 @@ from ..services.ticket_workflow import (
     update_ticket_address,
     update_ticket_customer,
     update_warranty,
+    verify_payment,
 )
 
 logger = logging.getLogger("skposcare.admin")
@@ -883,10 +885,25 @@ def collect_ticket_payment(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Record the payment collected for an out-of-warranty ticket and close it
-    if it's otherwise done. Admin/Manager or the assigned engineer."""
+    """Record the payment collected for an out-of-warranty ticket. Admin/Manager
+    or the assigned engineer. This does NOT close the ticket — paying in full
+    hands it to an Admin for verification via /verify-payment."""
     ticket = _load_ticket(db, reference, user)
     return collect_payment(db, ticket, user, body.amount_collected_inr)
+
+
+@router.post("/tickets/{reference}/verify-payment", response_model=TicketResponse)
+def verify_ticket_payment(
+    reference: str,
+    body: Optional[VerifyPaymentRequest] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Admin/Super Admin: confirm the collected money actually arrived, which
+    closes the ticket if the work is otherwise signed off. Managers and the
+    collecting engineer are deliberately excluded — see workflow.verify_payment."""
+    ticket = _load_ticket(db, reference, user)
+    return verify_payment(db, ticket, user, body.note if body else None)
 
 
 @router.delete("/tickets/{reference}", response_model=TicketResponse)

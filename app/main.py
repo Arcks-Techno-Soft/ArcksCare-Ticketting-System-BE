@@ -99,7 +99,10 @@ def _bootstrap_db() -> None:
         ensure_ticket_sales_rep_column,
         ensure_ticket_soft_delete_columns,
     )
-    from .services.ticket_workflow import ensure_worknote_attempt_column
+    from .services.ticket_workflow import (
+        ensure_payment_verification_columns,
+        ensure_worknote_attempt_column,
+    )
     from .services.installation_workflow import (
         ensure_installation_address_columns,
         ensure_installation_expected_date_columns,
@@ -119,6 +122,7 @@ def _bootstrap_db() -> None:
     ensure_service_fee_column(engine)
     ensure_service_type_column(engine)
     ensure_payment_columns(engine)
+    ensure_payment_verification_columns(engine)
     ensure_third_party_columns(engine)
     ensure_user_profile_columns(engine)
     ensure_shipment_delivered_at_column(engine)

@@ -342,6 +342,12 @@ class CollectPaymentRequest(BaseModel):
     amount_collected_inr: int = Field(ge=0, le=10_000_000)
 
 
+class VerifyPaymentRequest(BaseModel):
+    """Admin confirmation that collected money actually arrived. The optional
+    note is recorded on the audit timeline (e.g. the bank reference)."""
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
 class ChargeLineItem(BaseModel):
     id: int
     catalog_id: Optional[int] = None

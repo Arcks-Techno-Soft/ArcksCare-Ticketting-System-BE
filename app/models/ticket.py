@@ -54,9 +54,17 @@ class ServiceType(str, Enum):
 class PaymentStatus(str, Enum):
     """Out-of-warranty payment tracking. NULL on the column (no enum value)
     means a *legacy* ticket created before this feature — those never gate on
-    payment and close exactly as before. New tickets are created PENDING."""
+    payment and close exactly as before. New tickets are created PENDING.
+
+    Collecting the money and *confirming* it landed are deliberately two steps.
+    The engineer collects on-site (AWAITING_VERIFICATION); an Admin/Super Admin
+    later checks the money actually arrived and marks it VERIFIED, which is what
+    finally lets the ticket close. COLLECTED is the pre-verification value kept
+    for historical rows — see Ticket.payment_verified."""
     PENDING = "PENDING"        # payment owed, not yet collected
-    COLLECTED = "COLLECTED"    # payment received — ticket may close
+    COLLECTED = "COLLECTED"    # legacy: collected under the old auto-close flow
+    AWAITING_VERIFICATION = "AWAITING_VERIFICATION"  # engineer collected in full
+    VERIFIED = "VERIFIED"      # Admin confirmed receipt — ticket may close
 
 
 class Ticket(Base):
@@ -181,6 +189,14 @@ class Ticket(Base):
     payment_collected_by_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("users.id"), nullable=True
     )
+    # Admin verification of the collected money. Until these are set on a ticket
+    # that owed anything, the ticket stays RESOLVED — see payment_blocks_close.
+    payment_verified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    payment_verified_by_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
 
     attachments: Mapped[List["TicketAttachment"]] = relationship(
         back_populates="ticket", cascade="all, delete-orphan"
@@ -251,6 +267,9 @@ class Ticket(Base):
     payment_collected_by: Mapped[Optional["User"]] = relationship(
         foreign_keys=[payment_collected_by_id], lazy="joined"
     )
+    payment_verified_by: Mapped[Optional["User"]] = relationship(
+        foreign_keys=[payment_verified_by_id], lazy="joined"
+    )
 
     @property
     def on_hold(self) -> bool:
@@ -314,10 +333,41 @@ class Ticket(Base):
         return self.amount_due_inr > 0
 
     @property
+    def payment_verified(self) -> bool:
+        """Whether an Admin has confirmed the collected money actually arrived.
+
+        VERIFIED is the explicit new-flow value. A legacy COLLECTED row on an
+        already-CLOSED ticket was signed off under the old auto-close rules, so
+        it counts as verified — that stops historical tickets from re-surfacing
+        as "awaiting verification" without having to rewrite production data.
+        """
+        if self.payment_status == PaymentStatus.VERIFIED.value:
+            return True
+        return (
+            self.payment_status == PaymentStatus.COLLECTED.value
+            and self.status == TicketStatus.CLOSED.value
+        )
+
+    @property
+    def payment_awaiting_verification(self) -> bool:
+        """Paid in full, but no Admin has confirmed receipt yet. This is the
+        state that holds an otherwise-finished ticket in RESOLVED, and what the
+        UIs key off to show the "verify payment" action."""
+        return (
+            self.payment_required
+            and self.amount_pending_inr == 0
+            and not self.payment_verified
+        )
+
+    @property
     def payment_blocks_close(self) -> bool:
-        """Payment required but the full amount hasn't been collected yet — the
-        ticket can't close. Partial payments keep it blocked until paid in full."""
-        return self.payment_required and self.amount_pending_inr > 0
+        """Payment required but not yet both collected in full AND verified —
+        the ticket can't close. Partial payments keep it blocked until paid in
+        full; payment in full keeps it blocked until an Admin verifies receipt.
+        """
+        if not self.payment_required:
+            return False
+        return self.amount_pending_inr > 0 or not self.payment_verified
 
 
 class TicketEvent(Base):

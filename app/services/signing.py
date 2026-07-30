@@ -281,11 +281,22 @@ def record_engineer_signature(
         db, ticket=ticket, actor=actor, event_type="ENGINEER_SIGNED",
     )
     if payment_blocks_close(ticket):
-        # Signatures + PDF are done, but payment is still owed on this
-        # out-of-warranty ticket — keep it RESOLVED and flag payment pending.
-        # An admin/manager/engineer records the payment later to close it.
-        _log_event(db, ticket=ticket, actor=actor, event_type="PAYMENT_PENDING")
-        logger.info("Engineer signed for %s — held RESOLVED pending payment", ticket.reference)
+        # Signatures + PDF are done, but the money isn't settled — keep the
+        # ticket RESOLVED. Either it's still owed (an admin/manager/engineer
+        # records it later), or it's collected and waiting on Admin verification.
+        awaiting_verification = ticket.amount_pending_inr == 0
+        _log_event(
+            db, ticket=ticket, actor=actor,
+            event_type=(
+                "PAYMENT_AWAITING_VERIFICATION" if awaiting_verification
+                else "PAYMENT_PENDING"
+            ),
+        )
+        logger.info(
+            "Engineer signed for %s — held RESOLVED (%s)",
+            ticket.reference,
+            "awaiting payment verification" if awaiting_verification else "pending payment",
+        )
     else:
         prev = ticket.status
         ticket.status = TicketStatus.CLOSED.value
@@ -446,8 +457,15 @@ def record_field_signatures(
         payload={"signer_name": sub.name},
     )
     if payment_blocks_close(ticket):
-        # Out-of-warranty payment still owed — keep RESOLVED, flag pending.
-        _log_event(db, ticket=ticket, actor=None, event_type="PAYMENT_PENDING")
+        # Money not settled — keep RESOLVED. Either still owed, or collected and
+        # waiting on Admin verification.
+        _log_event(
+            db, ticket=ticket, actor=None,
+            event_type=(
+                "PAYMENT_AWAITING_VERIFICATION" if ticket.amount_pending_inr == 0
+                else "PAYMENT_PENDING"
+            ),
+        )
     else:
         prev = ticket.status
         ticket.status = TicketStatus.CLOSED.value
@@ -462,8 +480,8 @@ def record_field_signatures(
         from .ticket_notify import notify_sales_rep_closed
         notify_sales_rep_closed(ticket.id)
     logger.info(
-        "Field signatures recorded for %s by sub-engineer %s — ticket closed",
-        ticket.reference, sub.name,
+        "Field signatures recorded for %s by sub-engineer %s — status=%s",
+        ticket.reference, sub.name, ticket.status,
     )
     return resolution
 
