@@ -12,8 +12,10 @@ from typing import Any, Dict, List
 
 from sqlalchemy.orm import Session
 
-from ..models.ticket import Ticket, TicketStatus, WarrantyStatus
+from ..models.installation import Installation, InstallationStatus
+from ..models.ticket import ServiceType, Ticket, TicketStatus, WarrantyStatus
 from ..models.user import User, UserRole
+from .reports import STAGE_DEFS
 
 
 def _hours_between(start, end) -> float:
@@ -206,6 +208,136 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
     for t in window_tickets:
         service_type_mix[t.service_type] += 1
 
+    # ---- Response time & SLA stage compliance (window cohort) ----
+    # Thresholds come from the report's STAGE_DEFS so this page can never
+    # disagree with the Reports screen about what "breached" means. Two
+    # deliberate simplifications vs the full report: stage 6 (Resolved→Close)
+    # is skipped — its end time is derived per-ticket from the resolution PDF
+    # and would N+1 the lazy relationships — and time-on-hold is NOT
+    # subtracted, so a stage that spanned a hold reads slower here than in the
+    # report. Headline numbers here; per-ticket truth on the Reports page.
+    sla_stages: List[Dict[str, Any]] = []
+    for d in STAGE_DEFS:
+        if d["end"] == "closed_at":
+            continue  # not a Ticket column — reports derives it per ticket
+        minutes: List[float] = []
+        breaches = 0
+        applicable = 0
+        for t in window_tickets:
+            start = getattr(t, d["start"])
+            end = getattr(t, d["end"])
+            if start is None or end is None:
+                continue
+            threshold = (
+                d["remote"]
+                if t.service_type == ServiceType.REMOTE_SUPPORT.value
+                else d["site"]
+            )
+            if threshold is None:
+                continue
+            elapsed = _hours_between(start, end) * 60.0
+            minutes.append(elapsed)
+            applicable += 1
+            if elapsed > threshold:
+                breaches += 1
+        sla_stages.append({
+            "stage": d["stage"],
+            "label": d["label"],
+            "avg_min": round(sum(minutes) / len(minutes), 1) if minutes else None,
+            "breach_rate": round((breaches / applicable) * 100, 1) if applicable else None,
+            "measured": applicable,
+        })
+
+    # ---- Backlog aging + current holds (live state, NOT the window cohort:
+    # the question is "what is sitting in the queue right now") ----
+    open_live = [
+        t for t in all_tickets if t.status in open_statuses and t.held_at is None
+    ]
+    aging_order = ["0-2d", "3-7d", "8-14d", "15d+"]
+    backlog_aging: Dict[str, int] = {k: 0 for k in aging_order}
+    for t in open_live:
+        age_days = (now - _aware(t.created_at)).total_seconds() / 86400.0
+        if age_days <= 2:
+            backlog_aging["0-2d"] += 1
+        elif age_days <= 7:
+            backlog_aging["3-7d"] += 1
+        elif age_days <= 14:
+            backlog_aging["8-14d"] += 1
+        else:
+            backlog_aging["15d+"] += 1
+
+    held_now = sorted(
+        (t for t in all_tickets if t.held_at is not None and t.status != TicketStatus.CLOSED.value),
+        key=lambda t: _aware(t.held_at),
+    )
+    holds = [
+        {
+            "reference": t.reference,
+            "business_name": t.business_name,
+            "status": t.status,
+            "reason": (t.hold_reason or "").strip() or None,
+            "days_on_hold": round((now - _aware(t.held_at)).total_seconds() / 86400.0, 1),
+        }
+        for t in held_now[:20]  # longest-parked first; 20 is plenty for a card
+    ]
+
+    # ---- Installations (same trailing window) ----
+    all_installs: List[Installation] = db.query(Installation).all()
+    window_installs = [i for i in all_installs if _aware(i.created_at) >= window_start]
+    completed_in_window = [
+        i for i in all_installs
+        if i.completed_at is not None and _aware(i.completed_at) >= window_start
+    ]
+    assign_to_complete = [
+        _hours_between(i.assigned_at, i.completed_at)
+        for i in completed_in_window
+        if i.assigned_at is not None
+    ]
+    installations = {
+        "window_created": len(window_installs),
+        "window_completed": len(completed_in_window),
+        "open_now": sum(
+            1 for i in all_installs
+            if i.status in (InstallationStatus.NEW.value, InstallationStatus.ASSIGNED.value)
+            and i.held_at is None
+        ),
+        "on_hold": sum(
+            1 for i in all_installs
+            if i.held_at is not None and i.status != InstallationStatus.CLOSED.value
+        ),
+        "avg_assign_to_complete_hours": (
+            round(sum(assign_to_complete) / len(assign_to_complete), 2)
+            if assign_to_complete else 0.0
+        ),
+    }
+
+    # ---- Repeat businesses (window cohort) ----
+    # A site raising several tickets in one window is a machine, environment,
+    # or training problem — five tickets are rarely five coincidences.
+    by_business: Dict[str, Dict[str, Any]] = defaultdict(
+        lambda: {"tickets": 0, "products": defaultdict(int), "open": 0}
+    )
+    for t in window_tickets:
+        b = by_business[t.business_name]
+        b["tickets"] += 1
+        b["products"][t.product_category] += 1
+        if t.status in open_statuses:
+            b["open"] += 1
+    repeat_businesses = sorted(
+        [
+            {
+                "business_name": name,
+                "tickets": data["tickets"],
+                "open_now": data["open"],
+                "top_product": max(data["products"].items(), key=lambda kv: kv[1])[0],
+            }
+            for name, data in by_business.items()
+            if data["tickets"] >= 2
+        ],
+        key=lambda row: row["tickets"],
+        reverse=True,
+    )[:10]
+
     # ---- Per-engineer performance ----
     engineers = (
         db.query(User)
@@ -214,7 +346,10 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
     )
     eng_by_id = {e.id: e for e in engineers}
     eng_buckets: Dict[int, Dict[str, Any]] = {
-        e.id: {"engineer_id": e.id, "name": e.name, "assigned": 0, "resolved": 0, "hours": []}
+        e.id: {
+            "engineer_id": e.id, "name": e.name, "assigned": 0, "resolved": 0,
+            "hours": [], "installs_assigned": 0, "installs_completed": 0,
+        }
         for e in engineers
     }
     for t in window_tickets:
@@ -224,6 +359,14 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
             if t.resolved_at and t.resolving_started_at:
                 b["resolved"] += 1
                 b["hours"].append(_hours_between(t.resolving_started_at, t.resolved_at))
+    # Installations count toward workload too — without this, an engineer who
+    # spent the window installing looks idle on this table.
+    for i in window_installs:
+        if i.assigned_engineer_id and i.assigned_engineer_id in eng_buckets:
+            b = eng_buckets[i.assigned_engineer_id]
+            b["installs_assigned"] += 1
+            if i.completed_at is not None:
+                b["installs_completed"] += 1
     engineer_performance = sorted(
         [
             {
@@ -231,6 +374,8 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
                 "name": b["name"],
                 "assigned": b["assigned"],
                 "resolved": b["resolved"],
+                "installs_assigned": b["installs_assigned"],
+                "installs_completed": b["installs_completed"],
                 "avg_hours": round(sum(b["hours"]) / len(b["hours"]), 2) if b["hours"] else 0.0,
                 "completion_rate": round((b["resolved"] / b["assigned"]) * 100, 1) if b["assigned"] else 0.0,
             }
@@ -261,6 +406,11 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
         "revenue": revenue,
         "warranty_mix": dict(warranty_mix),
         "service_type_mix": dict(service_type_mix),
+        "sla_stages": sla_stages,
+        "backlog_aging": backlog_aging,
+        "holds": holds,
+        "installations": installations,
+        "repeat_businesses": repeat_businesses,
     }
 
 
