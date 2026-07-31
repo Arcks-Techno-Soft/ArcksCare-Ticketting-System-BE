@@ -281,34 +281,173 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
         for t in held_now[:20]  # longest-parked first; 20 is plenty for a card
     ]
 
-    # ---- Installations (same trailing window) ----
+    # Engineer roster — shared by the ticket and installation per-engineer
+    # tables below, so it's fetched once here.
+    engineers = (
+        db.query(User)
+        .filter(User.role == UserRole.ENGINEER.value)
+        .all()
+    )
+
+    # ---- Installations: a full parallel view (the UI toggles between this and
+    # the ticket blocks above, so it mirrors their shape). ----
     all_installs: List[Installation] = db.query(Installation).all()
     window_installs = [i for i in all_installs if _aware(i.created_at) >= window_start]
     completed_in_window = [
         i for i in all_installs
         if i.completed_at is not None and _aware(i.completed_at) >= window_start
     ]
+    install_open_statuses = {InstallationStatus.NEW.value, InstallationStatus.ASSIGNED.value}
+
     assign_to_complete = [
         _hours_between(i.assigned_at, i.completed_at)
-        for i in completed_in_window
-        if i.assigned_at is not None
+        for i in completed_in_window if i.assigned_at is not None
     ]
+    create_to_complete = [
+        _hours_between(i.created_at, i.completed_at) for i in completed_in_window
+    ]
+
+    # Expected-date adherence — the promise made to the customer. Compared on
+    # DATES (the expected value is a plain date, not a timestamp).
+    today = now.date()
+    exp_on_time = exp_late = exp_overdue_open = exp_upcoming = exp_no_date = 0
+    for i in window_installs:
+        exp = i.expected_installation_date
+        if exp is None:
+            exp_no_date += 1
+        elif i.completed_at is not None:
+            if _aware(i.completed_at).date() <= exp:
+                exp_on_time += 1
+            else:
+                exp_late += 1
+        elif exp < today:
+            exp_overdue_open += 1
+        else:
+            # Dated, not done, not yet due — still on schedule. Its own bucket
+            # so the five states partition window_created exactly.
+            exp_upcoming += 1
+
+    install_open_live = [
+        i for i in all_installs if i.status in install_open_statuses and i.held_at is None
+    ]
+    install_aging: Dict[str, int] = {k: 0 for k in aging_order}
+    for i in install_open_live:
+        age_days = (now - _aware(i.created_at)).total_seconds() / 86400.0
+        if age_days <= 2:
+            install_aging["0-2d"] += 1
+        elif age_days <= 7:
+            install_aging["3-7d"] += 1
+        elif age_days <= 14:
+            install_aging["8-14d"] += 1
+        else:
+            install_aging["15d+"] += 1
+
+    install_held = sorted(
+        (i for i in all_installs
+         if i.held_at is not None and i.status != InstallationStatus.CLOSED.value),
+        key=lambda i: _aware(i.held_at),
+    )
+
+    # Per-day created vs completed, on the same day grid as the ticket series.
+    install_days = [
+        {"date": row["date"], "created": 0, "completed": 0} for row in days_series
+    ]
+    install_by_date = {row["date"]: row for row in install_days}
+    for i in window_installs:
+        key = _aware(i.created_at).date().isoformat()
+        if key in install_by_date:
+            install_by_date[key]["created"] += 1
+    for i in all_installs:
+        if i.completed_at is None:
+            continue
+        key = _aware(i.completed_at).date().isoformat()
+        if key in install_by_date:
+            install_by_date[key]["completed"] += 1
+
+    install_by_status: Dict[str, int] = defaultdict(int)
+    for i in window_installs:
+        install_by_status[i.status] += 1
+
+    # Per-engineer installation workload, same shape as the ticket table.
+    inst_eng: Dict[int, Dict[str, Any]] = {
+        e.id: {"engineer_id": e.id, "name": e.name, "assigned": 0, "completed": 0, "hours": []}
+        for e in engineers
+    }
+    for i in window_installs:
+        if i.assigned_engineer_id and i.assigned_engineer_id in inst_eng:
+            b = inst_eng[i.assigned_engineer_id]
+            b["assigned"] += 1
+            if i.completed_at is not None:
+                b["completed"] += 1
+                if i.assigned_at is not None:
+                    b["hours"].append(_hours_between(i.assigned_at, i.completed_at))
+    install_engineer_performance = sorted(
+        [
+            {
+                "engineer_id": b["engineer_id"],
+                "name": b["name"],
+                "assigned": b["assigned"],
+                "completed": b["completed"],
+                "avg_hours": round(sum(b["hours"]) / len(b["hours"]), 2) if b["hours"] else 0.0,
+                "completion_rate": round((b["completed"] / b["assigned"]) * 100, 1) if b["assigned"] else 0.0,
+            }
+            for b in inst_eng.values()
+        ],
+        key=lambda row: (-row["completed"], row["avg_hours"]),
+    )
+
+    # Where installations land — business category is the closest thing to a
+    # customer segment on an installation.
+    inst_by_category: Dict[str, int] = defaultdict(int)
+    for i in window_installs:
+        inst_by_category[i.business_category or "Uncategorised"] += 1
+    install_category_breakdown = sorted(
+        [{"category": c, "total": n} for c, n in inst_by_category.items()],
+        key=lambda row: row["total"],
+        reverse=True,
+    )
+
     installations = {
-        "window_created": len(window_installs),
-        "window_completed": len(completed_in_window),
-        "open_now": sum(
-            1 for i in all_installs
-            if i.status in (InstallationStatus.NEW.value, InstallationStatus.ASSIGNED.value)
-            and i.held_at is None
-        ),
-        "on_hold": sum(
-            1 for i in all_installs
-            if i.held_at is not None and i.status != InstallationStatus.CLOSED.value
-        ),
-        "avg_assign_to_complete_hours": (
-            round(sum(assign_to_complete) / len(assign_to_complete), 2)
-            if assign_to_complete else 0.0
-        ),
+        "kpis": {
+            "window_created": len(window_installs),
+            "window_completed": len(completed_in_window),
+            "open_now": len(install_open_live),
+            "on_hold": len(install_held),
+            "closed_total": sum(
+                1 for i in all_installs if i.status == InstallationStatus.CLOSED.value
+            ),
+            "avg_assign_to_complete_hours": (
+                round(sum(assign_to_complete) / len(assign_to_complete), 2)
+                if assign_to_complete else 0.0
+            ),
+            "avg_create_to_complete_hours": (
+                round(sum(create_to_complete) / len(create_to_complete), 2)
+                if create_to_complete else 0.0
+            ),
+            "overdue_open": exp_overdue_open,
+        },
+        "expected_date": {
+            "on_time": exp_on_time,
+            "late": exp_late,
+            "overdue_open": exp_overdue_open,
+            "upcoming": exp_upcoming,
+            "no_date": exp_no_date,
+        },
+        "per_day": install_days,
+        "by_status": dict(install_by_status),
+        "backlog_aging": install_aging,
+        "holds": [
+            {
+                "reference": i.reference,
+                "business_name": i.business_name,
+                "status": i.status,
+                "reason": (i.hold_reason or "").strip() or None,
+                "days_on_hold": round((now - _aware(i.held_at)).total_seconds() / 86400.0, 1),
+            }
+            for i in install_held[:20]
+        ],
+        "engineer_performance": install_engineer_performance,
+        "category_breakdown": install_category_breakdown,
     }
 
     # ---- Repeat businesses (window cohort) ----
@@ -338,12 +477,7 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
         reverse=True,
     )[:10]
 
-    # ---- Per-engineer performance ----
-    engineers = (
-        db.query(User)
-        .filter(User.role == UserRole.ENGINEER.value)
-        .all()
-    )
+    # ---- Per-engineer performance (roster fetched above) ----
     eng_by_id = {e.id: e for e in engineers}
     eng_buckets: Dict[int, Dict[str, Any]] = {
         e.id: {
