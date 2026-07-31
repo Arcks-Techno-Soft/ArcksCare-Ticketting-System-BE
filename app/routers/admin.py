@@ -294,11 +294,37 @@ def set_user_role(
 @router.get("/analytics")
 def get_analytics(
     days: int = Query(default=30, ge=7, le=365),
+    date_from: Optional[date] = Query(
+        default=None, description="Custom range start (IST calendar day, inclusive)"
+    ),
+    date_to: Optional[date] = Query(
+        default=None, description="Custom range end (IST calendar day, inclusive)"
+    ),
     db: Session = Depends(get_db),
     _user: User = Depends(require_role(UserRole.ADMIN, UserRole.MANAGER)),
 ):
-    """Aggregated metrics for the analytics dashboard. Admin/Manager."""
-    return compute_analytics(db, days)
+    """Aggregated metrics for the analytics dashboard. Admin/Manager.
+
+    Pass `days` for a trailing window, or BOTH `date_from` and `date_to` for an
+    explicit range (which then takes precedence over `days`).
+    """
+    if (date_from is None) != (date_to is None):
+        raise HTTPException(
+            status_code=400,
+            detail="Provide both date_from and date_to for a custom range, or neither.",
+        )
+    if date_from is not None and date_to is not None:
+        if date_to < date_from:
+            raise HTTPException(
+                status_code=400, detail="date_to must be on or after date_from"
+            )
+        # Same ceiling as the trailing window, so one request can't sweep years
+        # of history into an in-memory aggregation.
+        if (date_to - date_from).days + 1 > 365:
+            raise HTTPException(
+                status_code=400, detail="Custom range cannot exceed 365 days."
+            )
+    return compute_analytics(db, days, date_from=date_from, date_to=date_to)
 
 
 @router.get("/reports/tickets")

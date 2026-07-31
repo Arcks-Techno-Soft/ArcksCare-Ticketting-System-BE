@@ -7,15 +7,15 @@ dashboard cares about (default 30).
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from datetime import date, datetime, time, timedelta, timezone
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
 from ..models.installation import Installation, InstallationStatus
 from ..models.ticket import ServiceType, Ticket, TicketStatus, WarrantyStatus
 from ..models.user import User, UserRole
-from .reports import STAGE_DEFS
+from .reports import IST, STAGE_DEFS
 
 
 def _hours_between(start, end) -> float:
@@ -28,14 +28,40 @@ def _hours_between(start, end) -> float:
     return max(0.0, (end - start).total_seconds() / 3600.0)
 
 
-def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
+def compute_analytics(
+    db: Session,
+    days: int = 30,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+) -> Dict[str, Any]:
+    """Dashboard aggregations over a trailing `days` window, or over an
+    explicit [date_from, date_to] range when both are given.
+
+    Custom ranges use IST calendar-day boundaries (same convention as the
+    Reports page), so "1st to 7th" means those seven whole days as staff read
+    a calendar, not a UTC-shifted approximation. Live-state figures (open
+    counts, backlog aging, current holds) always describe NOW regardless of
+    the window — they answer "what's on the queue today", not "what happened
+    in the range".
+    """
     now = datetime.now(timezone.utc)
-    window_start = now - timedelta(days=days)
+    custom = date_from is not None and date_to is not None
+    if custom:
+        window_start = datetime.combine(date_from, time.min, tzinfo=IST)
+        window_end = datetime.combine(date_to, time.max, tzinfo=IST)
+        # Inclusive day count, so the per-day grid and "window_days" agree.
+        days = (date_to - date_from).days + 1
+    else:
+        window_start = now - timedelta(days=days)
+        window_end = now
 
     all_tickets: List[Ticket] = (
         db.query(Ticket).filter(Ticket.deleted_at.is_(None)).all()
     )
-    window_tickets = [t for t in all_tickets if _aware(t.created_at) >= window_start]
+    window_tickets = [
+        t for t in all_tickets
+        if window_start <= _aware(t.created_at) <= window_end
+    ]
 
     # ---- KPI cards ----
     total = len(all_tickets)
@@ -85,9 +111,12 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
         by_severity[t.severity] += 1
 
     # ---- Tickets-per-day series (created + resolved) ----
+    # Day grid spans the window itself: a custom range runs from its first to
+    # its last day, a trailing window counts back from today.
     days_series: List[Dict[str, Any]] = []
-    for offset in range(days - 1, -1, -1):
-        day = (now - timedelta(days=offset)).date()
+    grid_start = date_from if custom else (now - timedelta(days=days - 1)).date()
+    for offset in range(days):
+        day = grid_start + timedelta(days=offset)
         days_series.append({"date": day.isoformat(), "created": 0, "resolved": 0})
     by_date = {row["date"]: row for row in days_series}
 
@@ -292,10 +321,14 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
     # ---- Installations: a full parallel view (the UI toggles between this and
     # the ticket blocks above, so it mirrors their shape). ----
     all_installs: List[Installation] = db.query(Installation).all()
-    window_installs = [i for i in all_installs if _aware(i.created_at) >= window_start]
+    window_installs = [
+        i for i in all_installs
+        if window_start <= _aware(i.created_at) <= window_end
+    ]
     completed_in_window = [
         i for i in all_installs
-        if i.completed_at is not None and _aware(i.completed_at) >= window_start
+        if i.completed_at is not None
+        and window_start <= _aware(i.completed_at) <= window_end
     ]
     install_open_statuses = {InstallationStatus.NEW.value, InstallationStatus.ASSIGNED.value}
 
@@ -520,6 +553,10 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
 
     return {
         "window_days": days,
+        # Echoed back so the UI can label the range it is actually showing.
+        "window_from": (window_start.astimezone(IST).date()).isoformat(),
+        "window_to": (window_end.astimezone(IST).date()).isoformat(),
+        "window_custom": custom,
         "kpis": {
             "total_tickets": total,
             "open_tickets": open_count,
