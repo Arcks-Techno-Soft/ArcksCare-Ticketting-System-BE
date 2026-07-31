@@ -181,7 +181,9 @@ class Ticket(Base):
     # Out-of-warranty payment tracking. NULL = legacy ticket (pre-feature) and
     # is never payment-gated. New tickets start PENDING; an out-of-warranty
     # ticket can't CLOSE until this is COLLECTED. See services/signing.py.
-    payment_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    # 30, not 20: AWAITING_VERIFICATION is 21 chars. Postgres enforces the
+    # width (SQLite does not), so a 20-char column 500s on collect-payment.
+    payment_status: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     payment_amount_inr: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     payment_collected_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True

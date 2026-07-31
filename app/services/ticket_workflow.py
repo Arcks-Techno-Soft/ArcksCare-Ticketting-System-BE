@@ -74,13 +74,34 @@ def ensure_payment_verification_columns(engine: Engine) -> None:
         "payment_verified_by_id": "INTEGER",
     }
     missing = {name: ddl for name, ddl in wanted.items() if name not in existing}
-    if not missing:
+    if missing:
+        with engine.begin() as conn:
+            for name, ddl in missing.items():
+                conn.execute(
+                    text(f"ALTER TABLE {qualify('tickets')} ADD COLUMN {name} {ddl}")
+                )
+
+    # payment_status was VARCHAR(20), one char too short for the 21-char
+    # AWAITING_VERIFICATION. Postgres enforces the width and rejects the write;
+    # SQLite ignores it entirely. Widen in place — on Postgres 9.2+ growing a
+    # varchar is a catalog-only change, so there's no table rewrite or lock risk.
+    if engine.dialect.name == "sqlite":
         return
-    with engine.begin() as conn:
-        for name, ddl in missing.items():
+    col = next(
+        (c for c in insp.get_columns("tickets", schema=MIGRATION_SCHEMA)
+         if c["name"] == "payment_status"),
+        None,
+    )
+    length = getattr(col["type"], "length", None) if col else None
+    if length is not None and length < 30:
+        with engine.begin() as conn:
             conn.execute(
-                text(f"ALTER TABLE {qualify('tickets')} ADD COLUMN {name} {ddl}")
+                text(
+                    f"ALTER TABLE {qualify('tickets')} "
+                    "ALTER COLUMN payment_status TYPE VARCHAR(30)"
+                )
             )
+        logger.info("Widened tickets.payment_status from VARCHAR(%s) to VARCHAR(30)", length)
 
 
 # --------------------------- helpers ------------------------------------- #
