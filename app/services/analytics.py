@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 
 from sqlalchemy.orm import Session
 
-from ..models.ticket import Ticket, TicketStatus
+from ..models.ticket import Ticket, TicketStatus, WarrantyStatus
 from ..models.user import User, UserRole
 
 
@@ -138,10 +138,19 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
     )
 
     # ---- Per-product breakdown (tickets created in the window) ----
-    by_product: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"total": 0, "resolved": 0, "hours": []})
+    # Carries the warranty split per product too: a product whose tickets are
+    # mostly out-of-warranty is where the service revenue (and the spare-part
+    # billing) comes from.
+    by_product: Dict[str, Dict[str, Any]] = defaultdict(
+        lambda: {"total": 0, "resolved": 0, "hours": [], "under_warranty": 0, "out_of_warranty": 0}
+    )
     for t in window_tickets:
         bucket = by_product[t.product_category]
         bucket["total"] += 1
+        if t.warranty_status == WarrantyStatus.UNDER_WARRANTY.value:
+            bucket["under_warranty"] += 1
+        elif t.warranty_status == WarrantyStatus.OUT_OF_WARRANTY.value:
+            bucket["out_of_warranty"] += 1
         if t.resolved_at and t.resolving_started_at:
             bucket["resolved"] += 1
             bucket["hours"].append(_hours_between(t.resolving_started_at, t.resolved_at))
@@ -151,6 +160,8 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
                 "product_category": prod,
                 "total": data["total"],
                 "resolved": data["resolved"],
+                "under_warranty": data["under_warranty"],
+                "out_of_warranty": data["out_of_warranty"],
                 "avg_hours": round(sum(data["hours"]) / len(data["hours"]), 2) if data["hours"] else 0.0,
             }
             for prod, data in by_product.items()
@@ -158,6 +169,42 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
         key=lambda row: row["total"],
         reverse=True,
     )
+
+    # ---- Revenue & warranty (tickets created in the window) ----
+    # Money figures use the same billing rules as the charges screen
+    # (Ticket.amount_due_inr mirrors services.spares.compute_charges), so the
+    # dashboard can never disagree with what a ticket actually bills.
+    #
+    # Scoped to payment-TRACKED tickets only (payment_status non-NULL): legacy
+    # tickets pre-date payment tracking, collected their money off the books,
+    # and would otherwise inflate "billed" with amounts that can never show as
+    # collected — turning the collection rate into fiction.
+    tracked = [t for t in window_tickets if t.payment_status is not None]
+    billed_inr = sum(t.amount_due_inr for t in tracked)
+    collected_inr = sum(t.amount_collected_inr for t in tracked)
+    outstanding_inr = sum(t.amount_pending_inr for t in tracked)
+    awaiting_verification = sum(1 for t in tracked if t.payment_awaiting_verification)
+    revenue = {
+        "billed_inr": billed_inr,
+        "collected_inr": collected_inr,
+        "outstanding_inr": outstanding_inr,
+        "collection_rate": round((collected_inr / billed_inr) * 100, 1) if billed_inr else 0.0,
+        "awaiting_verification": awaiting_verification,
+        "tracked_tickets": len(tracked),
+        "untracked_tickets": len(window_tickets) - len(tracked),
+    }
+
+    # Warranty mix over the window cohort — UNKNOWN means intake hasn't been
+    # triaged yet, so a growing UNKNOWN bar is itself a signal.
+    warranty_mix: Dict[str, int] = defaultdict(int)
+    for t in window_tickets:
+        warranty_mix[t.warranty_status] += 1
+
+    # Site-visit vs remote split: remote resolutions are the cheapest, so the
+    # remote share is worth watching as a service-cost lever.
+    service_type_mix: Dict[str, int] = defaultdict(int)
+    for t in window_tickets:
+        service_type_mix[t.service_type] += 1
 
     # ---- Per-engineer performance ----
     engineers = (
@@ -211,6 +258,9 @@ def compute_analytics(db: Session, days: int = 30) -> Dict[str, Any]:
         "issue_breakdown": issue_breakdown,
         "product_breakdown": product_breakdown,
         "engineer_performance": engineer_performance,
+        "revenue": revenue,
+        "warranty_mix": dict(warranty_mix),
+        "service_type_mix": dict(service_type_mix),
     }
 
 
