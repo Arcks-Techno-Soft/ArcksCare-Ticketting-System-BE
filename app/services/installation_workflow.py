@@ -462,6 +462,54 @@ def assign(db: Session, installation: Installation, actor: User, engineer_id: in
     return installation, engineer
 
 
+def decline_assignment(
+    db: Session, installation: Installation, actor: User, reason: str
+) -> Installation:
+    """ASSIGNED → NEW. Only the assigned engineer, with a mandatory reason.
+
+    Mirrors the ticket decline: the assignment is cleared and the installation
+    returns to the Admin/Manager queue. Blocked once any work attempt exists —
+    at that point handing it back is a reassignment decision, not a decline.
+    """
+    _require_assignee(installation, actor)
+    _require_not_held(installation)
+    _require_status(installation, {InstallationStatus.ASSIGNED.value})
+    has_attempt = (
+        db.query(InstallationAttempt.id)
+        .filter(InstallationAttempt.installation_id == installation.id)
+        .first()
+        is not None
+    )
+    if has_attempt:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "A work attempt was already started on this installation, so it "
+                "can't be declined. Ask a Manager to reassign it instead."
+            ),
+        )
+    reason = reason.strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="A reason is required to decline.")
+    prev = installation.status
+    installation.status = InstallationStatus.NEW.value
+    installation.assigned_engineer_id = None
+    installation.assigned_by_id = None
+    installation.assigned_at = None
+    _log_event(
+        db, installation=installation, actor=actor, event_type="DECLINED",
+        from_status=prev, to_status=installation.status,
+        payload={"reason": reason, "engineer": actor.name},
+    )
+    db.commit()
+    db.refresh(installation)
+    logger.info(
+        "Installation %s declined by %s (%s) — back to NEW",
+        installation.reference, actor.username, reason,
+    )
+    return installation
+
+
 def add_note(
     db: Session,
     installation: Installation,
