@@ -70,6 +70,7 @@ from ..schemas.ticket import (
     ShipmentOut,
     TicketAddressUpdate,
     TicketCustomerUpdate,
+    TicketSerialUpdate,
     TicketListItem,
     TicketListPage,
     TicketResponse,
@@ -110,6 +111,7 @@ from ..services.ticket_workflow import (
     update_severity,
     update_ticket_address,
     update_ticket_customer,
+    update_ticket_serial,
     update_warranty,
     verify_payment,
 )
@@ -1117,6 +1119,22 @@ def patch_ticket_customer(
     engineer, editable until the ticket is CLOSED."""
     ticket = _load_ticket(db, reference, user)
     return update_ticket_customer(db, ticket, user, body.model_dump())
+
+
+@router.patch("/tickets/{reference}/serial", response_model=TicketResponse)
+def patch_ticket_serial(
+    reference: str,
+    body: TicketSerialUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Correct the device serial number captured at intake.
+
+    Super Admin / Admin / Manager only — narrower than the customer/address
+    edits, which the assigned engineer may also make. Editable until CLOSED.
+    """
+    ticket = _load_ticket(db, reference, user)
+    return update_ticket_serial(db, ticket, user, body.serial_number)
 
 
 @router.patch("/tickets/{reference}/address", response_model=TicketResponse)

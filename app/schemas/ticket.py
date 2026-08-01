@@ -175,10 +175,10 @@ class TicketCreate(BaseModel):
 
 class TicketCustomerUpdate(BaseModel):
     """Editable customer / contact details. Admin/Manager or the assignee may
-    correct these until the ticket is CLOSED. Serial number and the device/issue
-    fields are intentionally NOT here — those identify the device and drive
-    dedup, so they stay fixed. Mirrors the customer half of TicketCreate,
-    reusing the same normalisers."""
+    correct these until the ticket is CLOSED. The serial number is edited
+    separately (TicketSerialUpdate) because it identifies the device and drives
+    dedup, so it carries a narrower permission and its own audit event. Mirrors
+    the customer half of TicketCreate, reusing the same normalisers."""
 
     business_name: str = Field(min_length=2, max_length=200)
     contact_name: str = Field(min_length=2, max_length=120)
@@ -214,6 +214,23 @@ class TicketCustomerUpdate(BaseModel):
         if isinstance(v, str) and not v.strip():
             return None
         return v
+
+
+class TicketSerialUpdate(BaseModel):
+    """Correct the device serial number after intake.
+
+    Customers mistype serials, and the wrong serial means the wrong warranty
+    answer, so Super Admin / Admin / Manager can fix it until the ticket is
+    CLOSED. Normalised exactly like TicketCreate (trim + upper-case) because
+    dedup matches on the stored value.
+    """
+
+    serial_number: str = Field(min_length=3, max_length=120)
+
+    @field_validator("serial_number")
+    @classmethod
+    def _normalise_serial(cls, v: str) -> str:
+        return v.strip().upper()
 
 
 class TicketAddressUpdate(BaseModel):

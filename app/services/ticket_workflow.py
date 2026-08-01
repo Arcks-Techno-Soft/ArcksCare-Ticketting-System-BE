@@ -1292,6 +1292,51 @@ def update_ticket_customer(db: Session, ticket: Ticket, actor: User, data: dict)
     return ticket
 
 
+def update_ticket_serial(db: Session, ticket: Ticket, actor: User, serial_number: str) -> Ticket:
+    """Correct the device serial number captured at intake.
+
+    Deliberately stricter than the customer/address edits: the serial decides
+    which device this is, which warranty applies, and whether a later ticket
+    counts as a duplicate — so the assigned engineer is NOT allowed to change
+    it, only Super Admin / Admin / Manager. Blocked once CLOSED, because the
+    serial is baked into the signed resolution PDF by then.
+
+    The old value goes into the event log: a serial edit rewrites the device
+    identity, so "what did it say before" has to stay answerable.
+    """
+    if actor.role not in ADMIN_MANAGER_ROLES:
+        raise HTTPException(
+            status_code=403,
+            detail="Only a Manager, Admin, or Super Admin can change the serial number.",
+        )
+    if ticket.status == TicketStatus.CLOSED.value:
+        raise HTTPException(
+            status_code=409,
+            detail="The serial number can't be changed after the ticket is closed.",
+        )
+    # Normalise here as well as in the schema: dedup matches on the STORED
+    # value (strip + upper), so the invariant belongs with the write, not only
+    # with one caller's validation.
+    serial_number = serial_number.strip().upper()
+    if not serial_number:
+        raise HTTPException(status_code=400, detail="Serial number can't be empty.")
+    previous = ticket.serial_number
+    if previous == serial_number:
+        return ticket  # no-op: don't log an event that changed nothing
+    ticket.serial_number = serial_number
+    _log_event(
+        db, ticket=ticket, actor=actor, event_type="SERIAL_UPDATED",
+        payload={"from": previous, "to": serial_number},
+    )
+    db.commit()
+    db.refresh(ticket)
+    logger.info(
+        "Ticket %s serial changed %s -> %s by %s",
+        ticket.reference, previous, serial_number, actor.username,
+    )
+    return ticket
+
+
 def update_ticket_address(db: Session, ticket: Ticket, actor: User, data: dict) -> Ticket:
     """Correct the site address / location. `data` carries already-validated
     fields (line1..3, city, state, pincode, latitude, longitude); blank optional
