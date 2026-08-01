@@ -38,6 +38,7 @@ from ..schemas.auth import (
     CreateUserResponse,
     DeleteTicketRequest,
     ForceCloseRequest,
+    DeclineRequest,
     HoldRequest,
     RegisterPushTokenRequest,
     ResumeRequest,
@@ -79,7 +80,12 @@ from ..services.analytics import compute_analytics
 from ..services.reports import IST, compute_ticket_report
 from ..services.auth import get_current_user, hash_password, require_role
 from ..services.email import send_engineer_assignment
-from ..services.push import notify_ticket_assigned, register_token, unregister_token
+from ..services.push import (
+    notify_ticket_assigned,
+    notify_ticket_declined,
+    register_token,
+    unregister_token,
+)
 from ..services.whatsapp import send_engineer_assignment_alert
 from ..services.ticket_notify import notify_sales_rep_assigned as notify_ticket_sales_rep_assigned
 from ..services.signing import (
@@ -1170,6 +1176,37 @@ def accept_ticket(
 ):
     """Engineer claims an assigned ticket. ASSIGNED → ACCEPTED."""
     return accept(db, _load_ticket(db, reference, user), user)
+
+
+@router.post("/tickets/{reference}/decline", response_model=TicketResponse)
+def decline_ticket(
+    reference: str,
+    body: DeclineRequest,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Engineer hands an assignment back with a mandatory reason.
+
+    ASSIGNED/ACCEPTED → ACKNOWLEDGED, assignment cleared, Admins/Managers
+    notified. Blocked once a work attempt exists.
+    """
+    ticket = _load_ticket(db, reference, user)
+    result = decline_assignment(db, ticket, user, body.reason)
+    background.add_task(notify_ticket_declined, result.id, user.name, body.reason.strip())
+    return result
+
+
+@router.post("/tickets/{reference}/rollback", response_model=TicketResponse)
+def rollback_ticket(
+    reference: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Undo one workflow step (ACCEPTED → ASSIGNED, RESOLVING → ACCEPTED) for
+    a mistaken tap. Assigned engineer or Admin/Manager; blocked once a work
+    attempt exists."""
+    return rollback_step(db, _load_ticket(db, reference, user), user)
 
 
 @router.post("/tickets/{reference}/start-work", response_model=TicketResponse)

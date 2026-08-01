@@ -126,6 +126,53 @@ def notify_new_ticket(ticket_id: int) -> None:
         )
 
 
+def notify_ticket_declined(ticket_id: int, engineer_name: str, reason: str) -> None:
+    """Engineer declined an assignment → notify all active Admins and Managers
+    so someone triages it again (it's back in ACKNOWLEDGED)."""
+    with SessionLocal() as db:
+        from ..models.ticket import Ticket  # local import avoids load cycle
+
+        ticket = db.get(Ticket, ticket_id)
+        if ticket is None:
+            return
+        staff_ids = db.execute(
+            select(User.id).where(
+                User.active.is_(True),
+                User.role.in_(ADMIN_MANAGER_ROLES),
+            )
+        ).scalars().all()
+        tokens = _tokens_for_users(db, staff_ids)
+        _send_to_tokens(
+            tokens,
+            title=f"Ticket declined by {engineer_name}",
+            body=f"{ticket.reference} · {ticket.business_name} — {reason}",
+            data={"type": "TICKET_DECLINED", "reference": ticket.reference},
+        )
+
+
+def notify_installation_declined(installation_id: int, engineer_name: str, reason: str) -> None:
+    """Engineer declined an installation → notify all active Admins/Managers."""
+    with SessionLocal() as db:
+        from ..models.installation import Installation  # local import avoids load cycle
+
+        installation = db.get(Installation, installation_id)
+        if installation is None:
+            return
+        staff_ids = db.execute(
+            select(User.id).where(
+                User.active.is_(True),
+                User.role.in_(ADMIN_MANAGER_ROLES),
+            )
+        ).scalars().all()
+        tokens = _tokens_for_users(db, staff_ids)
+        _send_to_tokens(
+            tokens,
+            title=f"Installation declined by {engineer_name}",
+            body=f"{installation.reference} · {installation.business_name} — {reason}",
+            data={"type": "INSTALLATION_DECLINED", "reference": installation.reference},
+        )
+
+
 def notify_ticket_assigned(ticket_id: int, engineer_id: int) -> None:
     """Ticket assigned → notify just the assigned engineer."""
     with SessionLocal() as db:

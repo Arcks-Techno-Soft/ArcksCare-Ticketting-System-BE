@@ -827,6 +827,102 @@ def accept(db: Session, ticket: Ticket, actor: User) -> Ticket:
     return ticket
 
 
+def _has_any_attempt(db: Session, ticket: Ticket) -> bool:
+    """Whether field work has ever begun on this ticket. Once an attempt
+    exists (open or ended), the engineer has been on the job — un-assigning or
+    rewinding the workflow would orphan that recorded work."""
+    return (
+        db.query(TicketAttempt.id)
+        .filter(TicketAttempt.ticket_id == ticket.id)
+        .first()
+        is not None
+    )
+
+
+def decline_assignment(db: Session, ticket: Ticket, actor: User, reason: str) -> Ticket:
+    """ASSIGNED/ACCEPTED → ACKNOWLEDGED. Only the assigned engineer, with a
+    mandatory reason.
+
+    The assignment is cleared entirely, so the ticket lands back in the
+    Admin/Manager triage queue exactly as it stood before assignment (the
+    acknowledgement is kept — it happened). Blocked once any work attempt
+    exists: at that point the engineer has been on the job, and handing the
+    ticket back is a reassignment decision for a Manager, not a decline.
+    """
+    _require_assignee(ticket, actor)
+    _require_not_held(ticket)
+    _require_status(ticket, {TicketStatus.ASSIGNED.value, TicketStatus.ACCEPTED.value})
+    if _has_any_attempt(db, ticket):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "A work attempt was already started on this ticket, so it can't "
+                "be declined. Ask a Manager to reassign it instead."
+            ),
+        )
+    reason = reason.strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="A reason is required to decline.")
+    prev = ticket.status
+    ticket.status = TicketStatus.ACKNOWLEDGED.value
+    ticket.assigned_engineer_id = None
+    ticket.assigned_by_id = None
+    ticket.assigned_at = None
+    ticket.accepted_at = None
+    _log_event(
+        db, ticket=ticket, actor=actor, event_type="DECLINED",
+        from_status=prev, to_status=ticket.status,
+        payload={"reason": reason, "engineer": actor.name},
+    )
+    db.commit()
+    db.refresh(ticket)
+    logger.info(
+        "Ticket %s declined by %s (%s) — back to ACKNOWLEDGED",
+        ticket.reference, actor.username, reason,
+    )
+    return ticket
+
+
+def rollback_step(db: Session, ticket: Ticket, actor: User) -> Ticket:
+    """Undo one workflow step: ACCEPTED → ASSIGNED, or RESOLVING → ACCEPTED.
+
+    For the engineer who tapped Accept or Start work by mistake — assigned
+    engineer or Admin/Manager. Blocked once any work attempt exists: recorded
+    field work pins the ticket at RESOLVING or later.
+    """
+    is_staff = actor.role in ADMIN_MANAGER_ROLES
+    if not is_staff and ticket.assigned_engineer_id != actor.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the assigned engineer or a Manager/Admin can roll back.",
+        )
+    _require_not_held(ticket)
+    _require_status(ticket, {TicketStatus.ACCEPTED.value, TicketStatus.RESOLVING.value})
+    if _has_any_attempt(db, ticket):
+        raise HTTPException(
+            status_code=409,
+            detail="A work attempt was already started, so the ticket can't be rolled back.",
+        )
+    prev = ticket.status
+    if ticket.status == TicketStatus.ACCEPTED.value:
+        ticket.status = TicketStatus.ASSIGNED.value
+        ticket.accepted_at = None
+    else:  # RESOLVING
+        ticket.status = TicketStatus.ACCEPTED.value
+        ticket.resolving_started_at = None
+    _log_event(
+        db, ticket=ticket, actor=actor, event_type="ROLLED_BACK",
+        from_status=prev, to_status=ticket.status,
+    )
+    db.commit()
+    db.refresh(ticket)
+    logger.info(
+        "Ticket %s rolled back %s -> %s by %s",
+        ticket.reference, prev, ticket.status, actor.username,
+    )
+    return ticket
+
+
 def start_work(db: Session, ticket: Ticket, actor: User) -> Ticket:
     """ACCEPTED → RESOLVING. Only the assigned engineer."""
     _require_assignee(ticket, actor)

@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
@@ -36,6 +36,7 @@ from ..schemas.installation import (
 )
 from ..schemas.auth import (
     AddSubEngineerRequest,
+    DeclineRequest,
     HoldRequest,
     ResumeRequest,
     SubEngineerOut,
@@ -44,6 +45,7 @@ from ..schemas.auth import (
 )
 from ..services.auth import get_current_user, require_role
 from ..services.installation_notify import notify_sales_rep_assigned
+from ..services.push import notify_installation_declined
 from ..services.installation_signing import (
     generate_field_sign_link,
     record_customer_signature_via_engineer,
@@ -53,6 +55,7 @@ from ..services.installation_workflow import (
     add_note,
     assign,
     close_installation,
+    decline_assignment,
     end_attempt,
     hold,
     remove_invoice_document,
@@ -344,6 +347,27 @@ def self_assign_endpoint(
 
 
 # --------------------------- hold / resume ------------------------------- #
+
+@router.post("/{reference}/decline", response_model=InstallationOut)
+def decline_endpoint(
+    reference: str,
+    body: DeclineRequest,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Assigned engineer hands the installation back with a mandatory reason.
+
+    ASSIGNED → NEW, assignment cleared, Admins/Managers notified. Blocked once
+    a work attempt exists.
+    """
+    inst = _load(db, reference)
+    result = decline_assignment(db, inst, user, body.reason)
+    background.add_task(
+        notify_installation_declined, result.id, user.name, body.reason.strip()
+    )
+    return result
+
 
 @router.post("/{reference}/hold", response_model=InstallationOut)
 def hold_endpoint(

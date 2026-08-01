@@ -149,6 +149,12 @@ class ResumeRequest(BaseModel):
     note: Optional[str] = Field(default=None, max_length=500)
 
 
+class DeclineRequest(BaseModel):
+    # Engineer hands an assignment back. Reason is mandatory — it's what the
+    # Admin/Manager notification and the audit trail show.
+    reason: str = Field(min_length=3, max_length=500)
+
+
 class UpdateWarrantyRequest(BaseModel):
     warranty_status: str  # UNKNOWN / UNDER_WARRANTY / OUT_OF_WARRANTY / AMC
 
