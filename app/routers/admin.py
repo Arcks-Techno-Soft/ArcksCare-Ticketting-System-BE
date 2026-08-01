@@ -704,15 +704,16 @@ def list_tickets(
         elif payment_state == "collected":
             matched = [t for t in ordered if t.amount_collected_inr > 0]
         elif payment_state == "outstanding":
-            # Finished work only (Resolved onward), and never a VERIFIED
-            # payment — matches the analytics tile: mid-work fees aren't
-            # collectable yet, and a verified payment is signed off even if
-            # legacy fee ≠ collected arithmetic leaves a remainder.
+            # RESOLVED only, never VERIFIED — matches the analytics tile:
+            # mid-work fees aren't collectable yet, closed means closed (a
+            # force-closed leftover was accepted at close time), and a
+            # verified payment is signed off even if legacy arithmetic
+            # leaves a remainder.
             matched = [
                 t for t in ordered
                 if t.payment_status is not None
                 and t.amount_pending_inr > 0
-                and t.status in (TicketStatus.RESOLVED.value, TicketStatus.CLOSED.value)
+                and t.status == TicketStatus.RESOLVED.value
                 and not t.payment_verified
             ]
         else:  # awaiting_verification
