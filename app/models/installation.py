@@ -155,6 +155,15 @@ class Installation(Base):
         cascade="all, delete-orphan",
         order_by="InstallationSubEngineer.created_at",
     )
+    # Uploaded invoice documents. Several files can be attached (a tax invoice
+    # plus a delivery challan, a multi-page scan, etc.) — this supersedes the
+    # single invoice_document_* columns above, which are kept only so rows
+    # created before this feature can be backfilled and read.
+    invoice_documents: Mapped[List["InstallationInvoiceDocument"]] = relationship(
+        back_populates="installation",
+        cascade="all, delete-orphan",
+        order_by="InstallationInvoiceDocument.uploaded_at",
+    )
 
     created_by: Mapped[Optional["User"]] = relationship(
         foreign_keys=[created_by_id], lazy="joined"
@@ -180,20 +189,62 @@ class Installation(Base):
 
     @property
     def invoice_document(self) -> Optional[dict]:
-        """Shape the invoice-document columns into a single object (or None).
+        """The most recent invoice document, or None.
 
-        Read by InstallationInvoiceDocumentOut, which resolves `storage_url`
-        into a viewable link via the active storage backend.
+        Kept for clients built before multi-document support — they read a
+        single `invoice_document` and would break if it vanished. New clients
+        should read `invoice_documents`. Falls back to the legacy columns for
+        any row the backfill hasn't reached.
         """
+        if self.invoice_documents:
+            d = self.invoice_documents[-1]  # ordered by uploaded_at
+            return {
+                "id": d.id,
+                "filename": d.filename,
+                "content_type": d.content_type,
+                "size_bytes": d.size_bytes,
+                "storage_url": d.storage_url,
+                "uploaded_at": d.uploaded_at,
+            }
         if not self.invoice_document_storage_key:
             return None
         return {
+            "id": None,
             "filename": self.invoice_document_filename,
             "content_type": self.invoice_document_content_type,
             "size_bytes": self.invoice_document_size_bytes,
             "storage_url": self.invoice_document_storage_key,
             "uploaded_at": self.invoice_document_uploaded_at,
         }
+
+
+class InstallationInvoiceDocument(Base):
+    """One uploaded invoice document (PDF or image) on an installation.
+
+    Several may be attached. Replaces the single invoice_document_* column set,
+    which is retained on `installations` purely so pre-existing rows can be
+    backfilled into this table — see ensure_installation_invoice_documents_table.
+    """
+
+    __tablename__ = "installation_invoice_documents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    installation_id: Mapped[int] = mapped_column(
+        ForeignKey("installations.id", ondelete="CASCADE"), index=True
+    )
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(120))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    storage_url: Mapped[str] = mapped_column(String(500))
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    uploaded_by_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+
+    installation: Mapped["Installation"] = relationship(back_populates="invoice_documents")
+    uploaded_by: Mapped[Optional["User"]] = relationship(lazy="joined")
 
 
 class InstallationNote(Base):

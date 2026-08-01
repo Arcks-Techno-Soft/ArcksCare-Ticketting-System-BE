@@ -165,11 +165,16 @@ class InstallationNoteAttachmentOut(BaseModel):
 
 
 class InstallationInvoiceDocumentOut(BaseModel):
-    """The optional uploaded invoice document. `storage_url` is resolved into a
-    viewable link (signed URL on Supabase, /uploads path locally)."""
+    """One uploaded invoice document. `storage_url` is resolved into a viewable
+    link (signed URL on Supabase, /uploads path locally).
+
+    `id` identifies the row for the per-document DELETE. It is None only on a
+    legacy single-document row the backfill hasn't reached yet.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
+    id: Optional[int] = None
     filename: str
     content_type: str
     size_bytes: int
@@ -266,6 +271,9 @@ class InstallationOut(BaseModel):
     invoice_number: str
     products_for_installation: Optional[str] = None
     expected_installation_date: Optional[date] = None
+    # Every attached invoice document. `invoice_document` (singular) is the most
+    # recent one, kept so clients built before multi-document support keep working.
+    invoice_documents: List[InstallationInvoiceDocumentOut] = []
     invoice_document: Optional[InstallationInvoiceDocumentOut] = None
     status: str
 

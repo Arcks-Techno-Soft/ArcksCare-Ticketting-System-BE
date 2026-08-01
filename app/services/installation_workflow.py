@@ -19,6 +19,7 @@ from ..models.installation import (
     Installation,
     InstallationAttempt,
     InstallationEvent,
+    InstallationInvoiceDocument,
     InstallationNote,
     InstallationStatus,
 )
@@ -68,6 +69,50 @@ def ensure_installation_invoice_document_columns(engine: Engine) -> None:
             if is_sqlite and ddl.startswith("TIMESTAMP"):
                 ddl = "TIMESTAMP"
             conn.execute(text(f"ALTER TABLE {qualify('installations')} ADD COLUMN {name} {ddl}"))
+
+
+def ensure_installation_invoice_documents_table(engine: Engine) -> None:
+    """Backfill the multi-document table from the legacy single-document columns.
+
+    The table itself is created by `create_all`; this copies each installation
+    that still has an invoice_document_storage_key into a row, so nothing
+    uploaded before multi-document support disappears from the UI. Idempotent:
+    an installation that already has rows is skipped, so re-running (or a
+    restart) can't duplicate anything. The legacy columns are left in place
+    rather than dropped — cheap to keep, and they make this reversible.
+    """
+    insp = inspect(engine)
+    tables = insp.get_table_names(schema=MIGRATION_SCHEMA)
+    if "installations" not in tables or "installation_invoice_documents" not in tables:
+        return  # Fresh DB, or create_all hasn't run yet.
+    existing = {c["name"] for c in insp.get_columns("installations", schema=MIGRATION_SCHEMA)}
+    if "invoice_document_storage_key" not in existing:
+        return  # No legacy column — nothing to migrate.
+
+    with engine.begin() as conn:
+        moved = conn.execute(
+            text(
+                f"""
+                INSERT INTO {qualify('installation_invoice_documents')}
+                    (installation_id, filename, content_type, size_bytes,
+                     storage_url, uploaded_at)
+                SELECT i.id,
+                       COALESCE(i.invoice_document_filename, 'invoice'),
+                       COALESCE(i.invoice_document_content_type, 'application/octet-stream'),
+                       COALESCE(i.invoice_document_size_bytes, 0),
+                       i.invoice_document_storage_key,
+                       COALESCE(i.invoice_document_uploaded_at, i.created_at)
+                  FROM {qualify('installations')} i
+                 WHERE i.invoice_document_storage_key IS NOT NULL
+                   AND NOT EXISTS (
+                       SELECT 1 FROM {qualify('installation_invoice_documents')} d
+                        WHERE d.installation_id = i.id
+                   )
+                """
+            )
+        ).rowcount
+    if moved:
+        logger.info("Backfilled %s legacy invoice document(s) into the multi-doc table", moved)
 
 
 def ensure_installation_sales_rep_column(engine: Engine) -> None:
@@ -545,62 +590,111 @@ def _require_invoice_doc_editor(installation: Installation, actor: User) -> None
         )
 
 
-def set_invoice_document(
-    db: Session, installation: Installation, actor: User, meta: dict
-) -> Installation:
-    """Attach (or replace) the uploaded invoice document.
+#: Cap on how many invoice documents one installation may carry. Generous for
+#: real use (invoice + challan + a multi-page scan) while stopping the upload
+#: form from being used as unbounded storage.
+MAX_INVOICE_DOCUMENTS = 10
 
-    `meta` is the storage metadata dict returned by the storage backend
-    (filename, content_type, size_bytes, storage_url). Allowed for the
+
+def add_invoice_documents(
+    db: Session, installation: Installation, actor: User, metas: list[dict]
+) -> Installation:
+    """Attach one or more invoice documents. Appends — it does NOT replace.
+
+    Each entry in `metas` is the storage metadata dict returned by the storage
+    backend (filename, content_type, size_bytes, storage_url). Allowed for the
     assignee / Admin / Manager, at any time BEFORE the installation is CLOSED.
     """
     _require_invoice_doc_editor(installation, actor)
+    if not metas:
+        return installation
 
-    replaced = bool(installation.invoice_document_storage_key)
-    installation.invoice_document_filename = meta["filename"]
-    installation.invoice_document_content_type = meta["content_type"]
-    installation.invoice_document_size_bytes = int(meta["size_bytes"])
-    installation.invoice_document_storage_key = meta["storage_url"]
-    installation.invoice_document_uploaded_at = datetime.now(timezone.utc)
+    already = len(installation.invoice_documents)
+    if already + len(metas) > MAX_INVOICE_DOCUMENTS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"An installation can hold at most {MAX_INVOICE_DOCUMENTS} invoice "
+                f"documents — {already} already attached, {len(metas)} more sent."
+            ),
+        )
 
+    now = datetime.now(timezone.utc)
+    for meta in metas:
+        db.add(
+            InstallationInvoiceDocument(
+                installation_id=installation.id,
+                filename=meta["filename"],
+                content_type=meta["content_type"],
+                size_bytes=int(meta["size_bytes"]),
+                storage_url=meta["storage_url"],
+                uploaded_at=now,
+                uploaded_by_id=actor.id,
+            )
+        )
     _log_event(
         db, installation=installation, actor=actor,
-        event_type="INVOICE_DOCUMENT_REPLACED" if replaced else "INVOICE_DOCUMENT_UPLOADED",
-        payload={"filename": meta["filename"], "size_bytes": int(meta["size_bytes"])},
+        event_type="INVOICE_DOCUMENT_UPLOADED",
+        payload={
+            "filenames": [m["filename"] for m in metas],
+            "count": len(metas),
+            "total_after": already + len(metas),
+        },
     )
     db.commit()
     db.refresh(installation)
     logger.info(
-        "Installation %s invoice document %s by %s (%s)",
-        installation.reference,
-        "replaced" if replaced else "uploaded",
-        actor.username,
-        meta["filename"],
+        "Installation %s: %s invoice document(s) added by %s (%s)",
+        installation.reference, len(metas), actor.username,
+        ", ".join(m["filename"] for m in metas),
     )
     return installation
 
 
-def remove_invoice_document(db: Session, installation: Installation, actor: User) -> Installation:
-    """Detach the uploaded invoice document. Assignee / Admin / Manager, before CLOSED."""
-    _require_invoice_doc_editor(installation, actor)
-    if not installation.invoice_document_storage_key:
-        return installation
+def remove_invoice_document(
+    db: Session, installation: Installation, actor: User, document_id: Optional[int] = None
+) -> Installation:
+    """Detach invoice documents. Assignee / Admin / Manager, before CLOSED.
 
-    prev = installation.invoice_document_filename
-    installation.invoice_document_filename = None
-    installation.invoice_document_content_type = None
-    installation.invoice_document_size_bytes = None
-    installation.invoice_document_storage_key = None
-    installation.invoice_document_uploaded_at = None
+    With `document_id`, removes that one document. Without it, removes them all
+    — which is what the pre-multi-document DELETE endpoint means, so clients
+    built against the single-document API keep behaving sensibly.
+    """
+    _require_invoice_doc_editor(installation, actor)
+
+    if document_id is not None:
+        doc = next((d for d in installation.invoice_documents if d.id == document_id), None)
+        if doc is None:
+            raise HTTPException(status_code=404, detail="Invoice document not found.")
+        removed = [doc.filename]
+        db.delete(doc)
+    else:
+        if not installation.invoice_documents and not installation.invoice_document_storage_key:
+            return installation
+        removed = [d.filename for d in installation.invoice_documents]
+        for d in list(installation.invoice_documents):
+            db.delete(d)
+
+    # Clear the legacy columns too, so a row that predates the backfill can't
+    # resurface through the invoice_document fallback.
+    if document_id is None:
+        installation.invoice_document_filename = None
+        installation.invoice_document_content_type = None
+        installation.invoice_document_size_bytes = None
+        installation.invoice_document_storage_key = None
+        installation.invoice_document_uploaded_at = None
 
     _log_event(
         db, installation=installation, actor=actor,
         event_type="INVOICE_DOCUMENT_REMOVED",
-        payload={"filename": prev},
+        payload={"filenames": removed, "count": len(removed)},
     )
     db.commit()
     db.refresh(installation)
-    logger.info("Installation %s invoice document removed by %s", installation.reference, actor.username)
+    logger.info(
+        "Installation %s: %s invoice document(s) removed by %s",
+        installation.reference, len(removed), actor.username,
+    )
     return installation
 
 

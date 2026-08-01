@@ -108,6 +108,7 @@ def _bootstrap_db() -> None:
         ensure_installation_expected_date_columns,
         ensure_installation_hold_columns,
         ensure_installation_invoice_document_columns,
+        ensure_installation_invoice_documents_table,
         ensure_installation_note_attempt_column,
         ensure_installation_products_column,
         ensure_installation_resolution_photo_columns,
@@ -156,6 +157,9 @@ def _bootstrap_db() -> None:
     # attempt-less notes left.
     from .services.attempt_backfill import backfill_legacy_notes_into_attempts
     backfill_legacy_notes_into_attempts(engine)
+    # Also post-create_all: copy each legacy single invoice document into the
+    # multi-document table so nothing already uploaded drops out of the UI.
+    ensure_installation_invoice_documents_table(engine)
     logger.info("Database ready: %s", settings.database_url.split("@")[-1])
 
     with SessionLocal() as db:

@@ -57,7 +57,7 @@ from ..services.installation_workflow import (
     hold,
     remove_invoice_document,
     resume,
-    set_invoice_document,
+    add_invoice_documents,
     start_attempt,
     update_address,
     update_customer,
@@ -465,6 +465,39 @@ def update_expected_date_endpoint(
 
 # --------------------------- invoice document --------------------------- #
 
+@router.post("/{reference}/invoice-documents", response_model=InstallationOut)
+async def upload_invoice_documents(
+    reference: str,
+    files: List[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Attach one or more invoice documents — PDFs or images.
+
+    Appends to whatever is already attached (up to MAX_INVOICE_DOCUMENTS).
+    Allowed for the assignee / Admin / Manager before the installation is CLOSED.
+    """
+    inst = _load(db, reference)
+    metas = [save_document(f, inst.reference) for f in files]
+    return add_invoice_documents(db, inst, user, metas)
+
+
+@router.delete(
+    "/{reference}/invoice-documents/{document_id}", response_model=InstallationOut
+)
+def delete_invoice_document_by_id(
+    reference: str,
+    document_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Remove one invoice document. Assignee / Admin / Manager, before CLOSED."""
+    inst = _load(db, reference)
+    return remove_invoice_document(db, inst, user, document_id=document_id)
+
+
+# --- single-document endpoints, kept for clients built before multi-upload --- #
+
 @router.post("/{reference}/invoice-document", response_model=InstallationOut)
 async def upload_invoice_document(
     reference: str,
@@ -472,14 +505,15 @@ async def upload_invoice_document(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Attach (or replace) the invoice document — a PDF or image.
+    """Attach a single invoice document.
 
-    Allowed for the assignee / Admin / Manager at any time before the
-    installation is CLOSED. Uploading again replaces the existing document.
+    Deprecated in favour of POST /invoice-documents. Note this now APPENDS
+    rather than replaces — an already-deployed app calling this to "replace" a
+    document will add a second one instead. Kept so those clients don't 404.
     """
     inst = _load(db, reference)
     meta = save_document(file, inst.reference)
-    return set_invoice_document(db, inst, user, meta)
+    return add_invoice_documents(db, inst, user, [meta])
 
 
 @router.delete("/{reference}/invoice-document", response_model=InstallationOut)
@@ -488,7 +522,11 @@ def delete_invoice_document(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Remove the uploaded invoice document. Assignee / Admin / Manager, before CLOSED."""
+    """Remove ALL invoice documents. Deprecated — prefer deleting by id.
+
+    Removes everything because the old single-document API had no id to target,
+    so "delete the invoice document" is the closest honest equivalent.
+    """
     inst = _load(db, reference)
     return remove_invoice_document(db, inst, user)
 
