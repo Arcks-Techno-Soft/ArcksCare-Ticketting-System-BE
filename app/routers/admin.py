@@ -107,6 +107,7 @@ from ..services.ticket_workflow import (
     end_attempt,
     force_close,
     hold,
+    reconcile_payment_after_charge_edit,
     remove_engineer,
     resolve,
     resume,
@@ -1994,9 +1995,15 @@ def add_ticket_spare(
         quantity=body.quantity,
         created_by_user_id=user.id,
     )
+    prev_due = ticket.amount_due_inr
     db.add(spare)
     db.commit()
     db.refresh(spare)
+    db.refresh(ticket)
+    # A settled payment described the OLD total — send it back to the
+    # verification queue if this edit changed what's owed.
+    reconcile_payment_after_charge_edit(db, ticket, user, prev_due)
+    db.commit()
     logger.info(
         "Added spare '%s' x%d to %s by %s",
         spare.name, spare.quantity, ticket.reference, user.username,
@@ -2024,12 +2031,16 @@ def update_ticket_spare(
     )
     if spare is None:
         raise HTTPException(status_code=404, detail="Spare not found")
+    prev_due = ticket.amount_due_inr
     if body.unit_price_inr is not None:
         spare.unit_price_inr = int(body.unit_price_inr)
     if body.quantity is not None:
         spare.quantity = int(body.quantity)
     db.commit()
     db.refresh(spare)
+    db.refresh(ticket)
+    reconcile_payment_after_charge_edit(db, ticket, user, prev_due)
+    db.commit()
     _sync_charges_pdf(db, ticket, user)
     return spare
 
@@ -2051,7 +2062,11 @@ def remove_ticket_spare(
     )
     if spare is None:
         raise HTTPException(status_code=404, detail="Spare not found")
+    prev_due = ticket.amount_due_inr
     db.delete(spare)
+    db.commit()
+    db.refresh(ticket)
+    reconcile_payment_after_charge_edit(db, ticket, user, prev_due)
     db.commit()
     _sync_charges_pdf(db, ticket, user)
     return None
@@ -2083,7 +2098,9 @@ def update_service_fee(
                 "Only a Super Admin can set a lower amount."
             ),
         )
+    prev_due = ticket.amount_due_inr
     ticket.service_fee_inr = new_fee
+    reconcile_payment_after_charge_edit(db, ticket, user, prev_due)
     db.commit()
     db.refresh(ticket)
     _sync_charges_pdf(db, ticket, user)
