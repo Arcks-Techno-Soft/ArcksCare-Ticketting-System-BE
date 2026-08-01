@@ -220,14 +220,14 @@ def compute_analytics(
     #
     # VERIFIED payments are excluded even when the arithmetic still shows a
     # remainder: verification is the human sign-off that the money story is
-    # settled. Legacy tickets closed under the old auto-close flow can carry
-    # fee ≠ collected forever (e.g. ₹1,000 fee, ₹800 accepted) — that
-    # difference was accepted at the time, not a debt to chase.
-    finished_statuses = (TicketStatus.RESOLVED.value, TicketStatus.CLOSED.value)
+    # settled. CLOSED is excluded outright — closed means closed; a
+    # force-closed ticket's leftover balance was accepted at close time, not
+    # a debt staff should chase. So outstanding = RESOLVED tickets awaiting
+    # collection, nothing else.
     outstanding_inr = sum(
         t.amount_pending_inr
         for t in tracked
-        if t.status in finished_statuses and not t.payment_verified
+        if t.status == TicketStatus.RESOLVED.value and not t.payment_verified
     )
     awaiting_verification = sum(1 for t in tracked if t.payment_awaiting_verification)
     revenue = {
