@@ -493,7 +493,10 @@ def compute_analytics(
         b = by_business[t.business_name]
         b["tickets"] += 1
         b["products"][t.product_category] += 1
-        if t.status in open_statuses:
+        # Held tickets are excluded, matching the "Currently open" KPI and every
+        # other open figure on this page — otherwise one page would use the word
+        # "open" two different ways, and the drill-down list wouldn't match.
+        if t.status in open_statuses and t.held_at is None:
             b["open"] += 1
     repeat_businesses = sorted(
         [

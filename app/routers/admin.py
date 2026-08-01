@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
@@ -75,7 +75,7 @@ from ..schemas.ticket import (
     TicketResponse,
 )
 from ..services.analytics import compute_analytics
-from ..services.reports import compute_ticket_report
+from ..services.reports import IST, compute_ticket_report
 from ..services.auth import get_current_user, hash_password, require_role
 from ..services.email import send_engineer_assignment
 from ..services.push import notify_ticket_assigned, register_token, unregister_token
@@ -348,6 +348,25 @@ def get_ticket_report(
 # engineer is free to take the next job. Anything CLOSED is done outright.
 # Jobs on hold are excluded too (see the held_at filters below) — the engineer
 # can't act on them, so they mustn't make them look busy.
+# Live workflow statuses as the ANALYTICS dashboard counts "open" — wider than
+# OPEN_TICKET_STATUSES below, which is the engineer-workload definition.
+ANALYTICS_OPEN_STATUSES = (
+    TicketStatus.OPEN.value,
+    TicketStatus.ACKNOWLEDGED.value,
+    TicketStatus.ASSIGNED.value,
+    TicketStatus.ACCEPTED.value,
+    TicketStatus.RESOLVING.value,
+)
+
+# Backlog-aging buckets as (older_than_days, up_to_days); None = open-ended.
+# Mirrors the bucket edges in services/analytics.py.
+_AGE_BUCKET_DAYS = {
+    "0-2d": (0, 2),
+    "3-7d": (2, 7),
+    "8-14d": (7, 14),
+    "15d+": (14, None),
+}
+
 OPEN_TICKET_STATUSES = (
     TicketStatus.ASSIGNED.value,
     TicketStatus.ACCEPTED.value,
@@ -512,6 +531,28 @@ def list_tickets(
     # only held; false = only live. Kept separate from `status` because hold is
     # an overlay, not a status.
     on_hold: Optional[bool] = Query(default=None),
+    # --- Analytics drill-down filters. The dashboard links into this list, so
+    # every tile/bar/row can open exactly the tickets it counted. Each mirrors
+    # a cohort definition in services/analytics.py. ---
+    warranty_status: Optional[str] = Query(default=None),
+    service_type: Optional[str] = Query(default=None),
+    # Exact match — `search` only covers reference/business/serial.
+    issue_category: Optional[str] = Query(default=None),
+    # Created-date range, IST calendar days inclusive — matches the analytics
+    # window so a tile's list holds the same tickets the tile counted.
+    created_from: Optional[date] = Query(default=None),
+    created_to: Optional[date] = Query(default=None),
+    # Cohort shortcuts that aren't a single column:
+    #   open        — live workflow statuses, excludes held (the "Currently open" tile)
+    #   resolved    — has resolved_at (the "Resolved" tile / avg-resolution cohort)
+    cohort: Optional[str] = Query(default=None, pattern="^(open|resolved)$"),
+    # Live open-ticket age buckets, matching the backlog-aging chart.
+    age_bucket: Optional[str] = Query(default=None, pattern="^(0-2d|3-7d|8-14d|15d\\+)$"),
+    # Payment cohorts. Computed from model properties rather than a column, so
+    # they're applied in Python after the SQL filters narrow the set.
+    payment_state: Optional[str] = Query(
+        default=None, pattern="^(tracked|collected|outstanding|awaiting_verification)$"
+    ),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -565,6 +606,34 @@ def list_tickets(
                 Ticket.serial_number.ilike(like_upper),
             )
         )
+    # --- Analytics drill-down filters ---
+    if warranty_status:
+        q = q.filter(Ticket.warranty_status == warranty_status.upper())
+    if service_type:
+        q = q.filter(Ticket.service_type == service_type.upper())
+    if issue_category:
+        q = q.filter(Ticket.issue_category == issue_category)
+    if created_from is not None:
+        q = q.filter(Ticket.created_at >= datetime.combine(created_from, time.min, tzinfo=IST))
+    if created_to is not None:
+        q = q.filter(Ticket.created_at <= datetime.combine(created_to, time.max, tzinfo=IST))
+    if cohort == "open":
+        # Same definition the "Currently open" tile counts: live workflow
+        # statuses, held tickets excluded (they're counted under On hold).
+        q = q.filter(
+            Ticket.status.in_(ANALYTICS_OPEN_STATUSES),
+            Ticket.held_at.is_(None),
+        )
+    elif cohort == "resolved":
+        q = q.filter(Ticket.resolved_at.isnot(None))
+    if age_bucket:
+        now_utc = datetime.now(timezone.utc)
+        lo, hi = _AGE_BUCKET_DAYS[age_bucket]
+        # Older than `lo` days; and, unless open-ended, no older than `hi`.
+        q = q.filter(Ticket.created_at <= now_utc - timedelta(days=lo))
+        if hi is not None:
+            q = q.filter(Ticket.created_at > now_utc - timedelta(days=hi))
+
     # COUNT runs against the same filtered query so totals stay accurate.
     total = q.with_entities(func.count(Ticket.id)).scalar() or 0
     # Default order for the admin inbox: group by workflow status so the
@@ -613,12 +682,30 @@ def list_tickets(
             Ticket.created_at.desc(),
         ],
     }.get(sort, [status_rank.asc(), severity_rank.asc(), Ticket.created_at.desc()])
-    rows = (
-        q.order_by(*order_by)
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
+    if payment_state:
+        # Payment cohorts key off model PROPERTIES (amount_due_inr and friends
+        # mirror the charges rules), which SQL can't express — so the ordered
+        # set is materialised, filtered, then paged in Python. The SQL filters
+        # above have already narrowed it, and the analytics links always pair
+        # this with a created-date range, so the set stays small.
+        ordered = q.order_by(*order_by).all()
+        if payment_state == "tracked":
+            matched = [t for t in ordered if t.payment_status is not None]
+        elif payment_state == "collected":
+            matched = [t for t in ordered if t.amount_collected_inr > 0]
+        elif payment_state == "outstanding":
+            matched = [t for t in ordered if t.payment_status is not None and t.amount_pending_inr > 0]
+        else:  # awaiting_verification
+            matched = [t for t in ordered if t.payment_awaiting_verification]
+        total = len(matched)
+        rows = matched[offset : offset + limit]
+    else:
+        rows = (
+            q.order_by(*order_by)
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
     return TicketListPage(
         items=[TicketListItem.model_validate(r) for r in rows],
         total=int(total),
