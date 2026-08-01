@@ -696,7 +696,14 @@ def list_tickets(
         elif payment_state == "collected":
             matched = [t for t in ordered if t.amount_collected_inr > 0]
         elif payment_state == "outstanding":
-            matched = [t for t in ordered if t.payment_status is not None and t.amount_pending_inr > 0]
+            # Finished work only (Resolved onward) — matches the analytics
+            # tile: a fee on a ticket still being worked isn't collectable yet.
+            matched = [
+                t for t in ordered
+                if t.payment_status is not None
+                and t.amount_pending_inr > 0
+                and t.status in (TicketStatus.RESOLVED.value, TicketStatus.CLOSED.value)
+            ]
         else:  # awaiting_verification
             matched = [t for t in ordered if t.payment_awaiting_verification]
         total = len(matched)

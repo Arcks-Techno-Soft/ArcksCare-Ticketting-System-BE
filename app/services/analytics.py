@@ -213,7 +213,14 @@ def compute_analytics(
     tracked = [t for t in window_tickets if t.payment_status is not None]
     billed_inr = sum(t.amount_due_inr for t in tracked)
     collected_inr = sum(t.amount_collected_inr for t in tracked)
-    outstanding_inr = sum(t.amount_pending_inr for t in tracked)
+    # Outstanding = balance due on FINISHED work only (Resolved onward). A
+    # ticket still being worked has its fee recorded but the money isn't
+    # collectable until the job is done — counting it would make "outstanding"
+    # read as money staff should be chasing when there's nothing to chase yet.
+    finished_statuses = (TicketStatus.RESOLVED.value, TicketStatus.CLOSED.value)
+    outstanding_inr = sum(
+        t.amount_pending_inr for t in tracked if t.status in finished_statuses
+    )
     awaiting_verification = sum(1 for t in tracked if t.payment_awaiting_verification)
     revenue = {
         "billed_inr": billed_inr,
