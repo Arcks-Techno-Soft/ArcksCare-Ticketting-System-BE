@@ -32,6 +32,8 @@ from ..schemas.auth import (
     BusinessNameSuggestion,
     AssignEngineerRequest,
     ChargesSummary,
+    CheckWarrantyRequest,
+    CheckWarrantyResponse,
     CollectPaymentRequest,
     CreateRosterSubEngineerRequest,
     CreateUserRequest,
@@ -95,6 +97,7 @@ from ..services.signing import (
 )
 from ..services.spares import compute_charges, oow_min_service_fee_inr
 from ..services.storage import get_storage
+from ..services.warranty_check import check_ticket_warranty
 from ..services.ticket_workflow import (
     accept,
     acknowledge,
@@ -1081,6 +1084,44 @@ def patch_warranty(
 ):
     ticket = _load_ticket(db, reference, user)
     return update_warranty(db, ticket, user, body.warranty_status.upper())
+
+
+@router.post("/tickets/{reference}/check-warranty", response_model=CheckWarrantyResponse)
+def check_ticket_warranty_endpoint(
+    reference: str,
+    body: Optional[CheckWarrantyRequest] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Look this ticket's serial number up in the warranty registry.
+
+    Applies the verdict to the ticket automatically when that's unambiguous —
+    i.e. nothing was set yet, or the registry agrees with what's already there.
+    When it would overturn an existing answer (a different status, or an AMC the
+    registry can't see) the verdict is returned with requires_confirmation and
+    NOT applied; the client re-sends with confirm=true once the user accepts.
+    That gate exists because warranty status drives billing: flipping it changes
+    what the customer owes.
+
+    Admin / Super Admin / Manager only, matching who may set warranty at all.
+    """
+    if user.role not in ADMIN_MANAGER_ROLES:
+        raise HTTPException(
+            status_code=403,
+            detail="Only Manager or Admin can check warranty status",
+        )
+    ticket = _load_ticket(db, reference, user)
+    result = check_ticket_warranty(db, ticket)
+
+    if not result["found"]:
+        return CheckWarrantyResponse(**result, applied=False)
+
+    confirmed = bool(body and body.confirm)
+    should_apply = confirmed or not result["requires_confirmation"]
+    if should_apply:
+        update_warranty(db, ticket, user, result["verdict"])
+        result["requires_confirmation"] = False
+    return CheckWarrantyResponse(**result, applied=should_apply)
 
 
 @router.patch("/tickets/{reference}/severity", response_model=TicketResponse)

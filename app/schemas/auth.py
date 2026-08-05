@@ -1,5 +1,5 @@
 """Pydantic schemas for auth and admin endpoints."""
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -157,6 +157,45 @@ class DeclineRequest(BaseModel):
 
 class UpdateWarrantyRequest(BaseModel):
     warranty_status: str  # UNKNOWN / UNDER_WARRANTY / OUT_OF_WARRANTY / AMC
+
+
+class CheckWarrantyRequest(BaseModel):
+    """Ask the warranty registry about this ticket's serial number.
+
+    `confirm` is the user having accepted an overwrite the server flagged as
+    needing it (the ticket already carries a different status, or is on AMC).
+    Left false, such a case is reported but NOT applied.
+    """
+    confirm: bool = False
+
+
+class WarrantyMatchOut(BaseModel):
+    """The matched registry row, for context in the popup."""
+    product_name: str
+    serial_number: str
+    invoice_number: Optional[str] = None
+    customer_name: Optional[str] = None
+    sale_date: Optional[date] = None
+    warranty_months: Optional[int] = None
+    expiry_date: Optional[date] = None
+
+
+class CheckWarrantyResponse(BaseModel):
+    """Result of a warranty check.
+
+    `found=False` means the serial isn't in the registry at all — the UI shows
+    "Invalid serial no." When `requires_confirmation` is true the verdict was
+    NOT applied; re-send with confirm=true to apply it.
+    """
+    found: bool
+    serial_number: str
+    verdict: Optional[str] = None          # UNDER_WARRANTY / OUT_OF_WARRANTY
+    current_status: Optional[str] = None   # the ticket's status before this call
+    applied: bool = False
+    requires_confirmation: bool = False
+    conflict_reason: Optional[str] = None  # "AMC" | "DIFFERS"
+    warranty: Optional[WarrantyMatchOut] = None
+    message: str
 
 
 class UpdateSeverityRequest(BaseModel):
