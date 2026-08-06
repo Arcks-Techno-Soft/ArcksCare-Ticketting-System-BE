@@ -242,6 +242,12 @@ class InstallationResolutionOut(BaseModel):
     engineer_signed_at: Optional[datetime] = None
     pdf_generated_at: Optional[datetime] = None
     customer_sign_token: str
+    # Stamped when the off-field signing link is generated. The clients gate the
+    # "here is the link" panel on this, so omitting it (as this schema did)
+    # meant the link never appeared even though the backend had minted it and
+    # logged FIELD_SIGN_LINK_GENERATED. TicketResponse has always exposed it,
+    # which is why ticket field-signing worked and installations didn't.
+    field_sign_link_generated_at: Optional[datetime] = None
 
     @field_validator("customer_photo_url", mode="after")
     @classmethod
