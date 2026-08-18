@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     duplicate_window_hours: int = Field(default=48)
 
     # Storage
-    storage_backend: str = Field(default="local")  # "local", "supabase" or "s3"
+    storage_backend: str = Field(default="local")  # "local" or "supabase"
     local_upload_dir: str = Field(default="./uploads")
 
     # Supabase Storage (only required when storage_backend="supabase")
@@ -68,15 +68,6 @@ class Settings(BaseSettings):
     supabase_service_key: str = Field(default="")  # the "service_role" secret from API settings
     supabase_bucket: str = Field(default="")       # e.g. sk-pos-care-uploads
     supabase_signed_url_ttl_seconds: int = Field(default=604800)  # 7 days
-
-    # Amazon S3 (only required when storage_backend="s3")
-    s3_bucket: str = Field(default="")             # e.g. arckscare-uploads-prod
-    s3_region: str = Field(default="ap-south-1")
-    s3_signed_url_ttl_seconds: int = Field(default=604800)  # 7 days
-    # Sign with a dedicated IAM *user's* long-lived keys, not instance-role temp
-    # credentials — role credentials cap presigned URLs at ~6 h instead of 7 days.
-    aws_access_key_id: str = Field(default="")
-    aws_secret_access_key: str = Field(default="")
 
     # WhatsApp notifications via Twilio — optional staff alerts on new ticket.
     # Silent no-op when any of the first three are blank, so the app deploys
