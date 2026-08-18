@@ -1,9 +1,11 @@
 """Pluggable file storage layer.
 
-Two backends ship out of the box:
+Three backends ship out of the box:
   - "local"    — writes to LOCAL_UPLOAD_DIR on disk; served via /uploads
   - "supabase" — uploads to a Supabase Storage bucket (private), serves files
                  via short-lived signed URLs
+  - "s3"       — uploads to a private Amazon S3 bucket, serves files via
+                 presigned URLs (same object-key convention as "supabase")
 
 Switch via the `STORAGE_BACKEND` env variable. The rest of the app uses the
 `save_uploads()` and `cleanup_ticket_files()` helpers at the bottom of this
@@ -313,6 +315,113 @@ class SupabaseStorage(Storage):
             return f"{self.url}/storage/v1/object/{self.bucket}/{stored_key}"
 
 
+# --------------------------- Amazon S3 ------------------------------------- #
+
+class S3Storage(Storage):
+    """Uploads to a private S3 bucket and serves via presigned URLs.
+
+    Mirrors SupabaseStorage 1:1: the DB stores the bare object key
+    ("{reference}/{filename}"), and a fresh presigned GET URL is minted each
+    time the file is fetched (TTL controlled by S3_SIGNED_URL_TTL_SECONDS).
+    Rows migrated from Supabase therefore keep working with no data rewrite.
+    """
+
+    def __init__(self) -> None:
+        s = get_settings()
+        self.bucket = s.s3_bucket or ""
+        self.ttl = s.s3_signed_url_ttl_seconds
+        if not self.bucket:
+            raise RuntimeError("STORAGE_BACKEND=s3 requires S3_BUCKET to be set.")
+        try:
+            import boto3
+            from botocore.config import Config
+        except ImportError as e:
+            raise RuntimeError(
+                "STORAGE_BACKEND=s3 requires boto3 (pip install -r requirements.txt)."
+            ) from e
+        # Explicit SigV4 + virtual addressing: the default config presigns
+        # against the legacy global endpoint, which rejects SigV4 URLs signed
+        # for ap-south-1.
+        kwargs: dict = {
+            "region_name": s.s3_region,
+            "config": Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+        }
+        if s.aws_access_key_id and s.aws_secret_access_key:
+            kwargs["aws_access_key_id"] = s.aws_access_key_id
+            kwargs["aws_secret_access_key"] = s.aws_secret_access_key
+        self.client = boto3.client("s3", **kwargs)
+
+    def _put(self, body: bytes, content_type: str, key: str) -> None:
+        try:
+            self.client.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=body,
+                ContentType=content_type,
+            )
+        except Exception as e:
+            logger.exception("S3 upload failed for %s", key)
+            raise HTTPException(status_code=502, detail=f"Storage upload failed: {e}")
+
+    def save(self, file: UploadFile, ticket_reference: str, filename: str) -> dict:
+        # Read into memory (max 50MB enforced) - simple and reliable.
+        body = file.file.read()
+        size = len(body)
+        if size > MAX_FILE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"File too large: {file.filename} (max 50 MB)",
+            )
+        content_type = file.content_type or "application/octet-stream"
+        key = f"{ticket_reference}/{filename}"
+        self._put(body, content_type, key)
+        logger.info("Uploaded %s to s3://%s/%s (%d bytes)", filename, self.bucket, key, size)
+        return {
+            "filename": filename,
+            "content_type": content_type,
+            "size_bytes": size,
+            "storage_url": key,  # We store the object key; presigned URL is minted on demand.
+        }
+
+    def save_bytes(self, content: bytes, content_type: str, ticket_reference: str, filename: str) -> dict:
+        size = len(content)
+        if size > MAX_FILE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"File too large: {filename} (max 50 MB)",
+            )
+        key = f"{ticket_reference}/{filename}"
+        self._put(content, content_type, key)
+        return {
+            "filename": filename,
+            "content_type": content_type,
+            "size_bytes": size,
+            "storage_url": key,
+        }
+
+    def public_url(self, stored_key: str) -> str:
+        """Mint a fresh presigned GET URL for the given object key."""
+        try:
+            return self.client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self.bucket, "Key": stored_key},
+                ExpiresIn=self.ttl,
+            )
+        except Exception:
+            logger.exception("Failed to presign URL for %s", stored_key)
+            return ""
+
+    def cleanup(self, ticket_reference: str) -> None:
+        try:
+            paginator = self.client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=f"{ticket_reference}/"):
+                keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+                if keys:
+                    self.client.delete_objects(Bucket=self.bucket, Delete={"Objects": keys})
+        except Exception:
+            logger.exception("S3 cleanup failed for %s (ignoring)", ticket_reference)
+
+
 # --------------------------------------------------------------------------- #
 # Factory + module-level public API                                           #
 # --------------------------------------------------------------------------- #
@@ -329,11 +438,13 @@ def get_storage() -> Storage:
     backend = (get_settings().storage_backend or "local").strip().lower()
     if backend == "supabase":
         _storage_instance = SupabaseStorage()
+    elif backend == "s3":
+        _storage_instance = S3Storage()
     elif backend == "local":
         _storage_instance = LocalStorage()
     else:
         raise RuntimeError(
-            f"Unknown STORAGE_BACKEND={backend!r}. Use 'local' or 'supabase'."
+            f"Unknown STORAGE_BACKEND={backend!r}. Use 'local', 'supabase' or 's3'."
         )
     logger.info("Storage backend: %s", backend)
     return _storage_instance
