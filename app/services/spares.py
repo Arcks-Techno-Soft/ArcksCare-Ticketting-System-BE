@@ -31,7 +31,8 @@ OOW_MIN_FEE_INR = {
 def oow_min_service_fee_inr(ticket: Ticket) -> int:
     """The minimum service charge for this ticket: the per-service-type
     out-of-warranty floor when the ticket is out of warranty, else 0 (no floor).
-    Staff may edit at/above this; only an Admin can set below it."""
+    Staff may edit at/above this; only an Admin-level user (Admin or Super
+    Admin) can set below it."""
     if ticket.warranty_status == WarrantyStatus.OUT_OF_WARRANTY.value:
         return OOW_MIN_FEE_INR.get(ticket.service_type, 0)
     return 0
