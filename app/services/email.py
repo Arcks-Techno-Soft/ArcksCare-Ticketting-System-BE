@@ -84,7 +84,7 @@ def _format_html(ticket: Ticket, support_url_base: Optional[str] = None) -> str:
 
       <h3 style="margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:0.06em;color:#737373;">Product</h3>
       <p style="margin:0 0 4px;"><strong>{ticket.product_category}</strong></p>
-      <p style="margin:0 0 20px;color:#525252;">Serial: <code>{ticket.serial_number}</code></p>
+      <p style="margin:0 0 20px;color:#525252;">Serial: <code>{ticket.serial_display}</code></p>
 
       <h3 style="margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:0.06em;color:#737373;">Issue</h3>
       <p style="margin:0 0 4px;"><strong>{ticket.issue_category}</strong></p>
@@ -135,7 +135,7 @@ def _format_text(ticket: Ticket) -> str:
         "",
         "PRODUCT",
         f"  {ticket.product_category}",
-        f"  Serial: {ticket.serial_number}",
+        f"  Serial: {ticket.serial_display}",
         "",
         "ISSUE",
         f"  {ticket.issue_category}",
@@ -240,7 +240,7 @@ async def send_customer_sign_request(ticket: Ticket, sign_url: str) -> bool:
       <p style="margin:0 0 18px;color:#525252;">Hi {ticket.contact_name},</p>
       <p style="margin:0 0 14px;color:#525252;">
         Our engineer has resolved ticket <strong>{ticket.reference}</strong> on your
-        {ticket.product_category} (serial {ticket.serial_number}). Please open the
+        {ticket.product_category} (serial {ticket.serial_display}). Please open the
         resolution document below, review it, and sign to confirm.
       </p>
       <p style="margin:24px 0;">
@@ -308,7 +308,7 @@ async def send_engineer_assignment(ticket: Ticket, engineer, assigned_by) -> boo
         f"You've been assigned ticket {ticket.reference} by {assigned_by.name}.\n\n"
         f"  Customer: {ticket.business_name} ({ticket.business_type})\n"
         f"  Contact:  {ticket.contact_name} — {ticket.phone}\n"
-        f"  Product:  {ticket.product_category} (serial {ticket.serial_number})\n"
+        f"  Product:  {ticket.product_category} (serial {ticket.serial_display})\n"
         f"  Issue:    {ticket.issue_category} — severity {ticket.severity}\n\n"
         f"Description:\n{ticket.description}\n\n"
         f"Open the ticket in the admin app to accept and start working."
@@ -329,7 +329,7 @@ async def send_engineer_assignment(ticket: Ticket, engineer, assigned_by) -> boo
       <table style="width:100%;border-collapse:collapse;font-size:14px;">
         <tr><td style="padding:6px 0;color:#737373;">Customer</td><td style="padding:6px 0;"><strong>{ticket.business_name}</strong> &middot; {ticket.business_type}</td></tr>
         <tr><td style="padding:6px 0;color:#737373;">Contact</td><td style="padding:6px 0;">{ticket.contact_name} &middot; {ticket.phone}</td></tr>
-        <tr><td style="padding:6px 0;color:#737373;">Product</td><td style="padding:6px 0;">{ticket.product_category} <span style="color:#737373;">(serial {ticket.serial_number})</span></td></tr>
+        <tr><td style="padding:6px 0;color:#737373;">Product</td><td style="padding:6px 0;">{ticket.product_category} <span style="color:#737373;">(serial {ticket.serial_display})</span></td></tr>
         <tr><td style="padding:6px 0;color:#737373;">Severity</td><td style="padding:6px 0;">{ticket.severity}</td></tr>
       </table>
       <h3 style="margin:20px 0 6px;font-size:13px;text-transform:uppercase;letter-spacing:0.06em;color:#737373;">Description</h3>

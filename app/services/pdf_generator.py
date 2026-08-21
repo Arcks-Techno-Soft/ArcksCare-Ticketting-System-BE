@@ -222,7 +222,7 @@ def generate_resolution_pdf(ticket: Ticket, resolution: Resolution) -> bytes:
     # ---- Issue info (merged product + issue) ----
     story.append(_full_card("ISSUE INFO", [
         ("Product category", ticket.product_category),
-        ("Serial number", ticket.serial_number),
+        ("Serial number", ticket.serial_display),
         ("Warranty status", _warranty_label(ticket.warranty_status)),
         ("Issue category", ticket.issue_category),
         ("Severity", ticket.severity),
