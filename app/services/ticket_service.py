@@ -133,7 +133,12 @@ def find_recent_open_ticket(db: Session, serial_number: str) -> Optional[Ticket]
     OPEN ticket on it created within the last DUPLICATE_WINDOW_HOURS hours.
     Resolved/closed tickets do NOT block new submissions - if a fix didn't
     stick, the customer should be able to reopen.
+
+    A blank serial (an "Other" product, which has none) never dedups — every
+    such ticket would otherwise collide with every other one.
     """
+    if not serial_number or not serial_number.strip():
+        return None
     settings = get_settings()
     window_start = datetime.now(timezone.utc) - timedelta(hours=settings.duplicate_window_hours)
 

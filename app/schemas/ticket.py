@@ -7,7 +7,7 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from .auth import AdditionalEngineerOut, SubEngineerOut, TicketAttemptOut, UserOut
 
@@ -53,6 +53,13 @@ class ProductCategory(str, Enum):
     MONITOR = "Monitor"
     CCTV = "CCTV"
     OTHER = "Other"
+
+
+# Catalogue product names, case-folded for comparison. "Other" is excluded: it
+# stands for a device that isn't ours, which is exactly the case with no serial.
+_CATALOGUE_PRODUCTS = {
+    p.value.casefold() for p in ProductCategory if p is not ProductCategory.OTHER
+}
 
 
 class IssueCategory(str, Enum):
@@ -103,7 +110,11 @@ class TicketCreate(BaseModel):
     # suggestions, but someone who picks "Other" types their own product
     # category, stored here verbatim. Mirrors business_type.
     product_category: str = Field(min_length=2, max_length=60)
-    serial_number: str = Field(min_length=3, max_length=120)
+    # Blank is allowed: a customer who picks the "Other" product category is
+    # reporting a device that isn't one of ours, so there's no serial for them
+    # to read off a label. Required for every catalogue product — see
+    # _serial_required_for_catalogue_products.
+    serial_number: str = Field(default="", max_length=120)
 
     # Free text (not enum-validated): the form offers IssueCategory as
     # suggestions; an "Other" pick sends the typed category, stored verbatim.
@@ -154,7 +165,10 @@ class TicketCreate(BaseModel):
     @classmethod
     def _normalise_serial(cls, v: str) -> str:
         # Serial numbers are matched for dedup; strip whitespace + uppercase.
-        return v.strip().upper()
+        v = v.strip().upper()
+        if v and len(v) < 3:
+            raise ValueError("Enter the product serial number")
+        return v
 
     @field_validator("pincode")
     @classmethod
@@ -171,6 +185,19 @@ class TicketCreate(BaseModel):
         if isinstance(v, str) and not v.strip():
             return None
         return v
+
+    @model_validator(mode="after")
+    def _serial_required_for_catalogue_products(self):
+        """A serial is mandatory for every product we sell, optional otherwise.
+
+        The form folds an "Other" pick into free text before sending, so the
+        product_category we receive is either one of our catalogue names (serial
+        required — it's printed on the device) or the customer's own wording for
+        a device that isn't ours (no serial to ask for).
+        """
+        if not self.serial_number and self.product_category.strip().casefold() in _CATALOGUE_PRODUCTS:
+            raise ValueError("Enter the product serial number")
+        return self
 
 
 class TicketCustomerUpdate(BaseModel):

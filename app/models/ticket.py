@@ -99,7 +99,10 @@ class Ticket(Base):
 
     # Product details
     product_category: Mapped[str] = mapped_column(String(60))
-    serial_number: Mapped[str] = mapped_column(String(120), index=True)
+    # Empty for an "Other" product — a device that isn't ours has no serial the
+    # customer can read off a label. Read serial_display for anything shown to
+    # a human.
+    serial_number: Mapped[str] = mapped_column(String(120), index=True, default="")
 
     # Issue details
     issue_category: Mapped[str] = mapped_column(String(80))
@@ -272,6 +275,15 @@ class Ticket(Base):
     payment_verified_by: Mapped[Optional["User"]] = relationship(
         foreign_keys=[payment_verified_by_id], lazy="joined"
     )
+
+    @property
+    def serial_display(self) -> str:
+        """Serial number for human-facing output (PDF, email, screens).
+
+        An "Other" product carries no serial, and a blank line under
+        "Serial number" reads as a bug rather than as "there isn't one".
+        """
+        return (self.serial_number or "").strip() or "Not provided"
 
     @property
     def on_hold(self) -> bool:
