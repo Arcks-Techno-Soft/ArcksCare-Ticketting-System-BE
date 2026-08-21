@@ -2122,21 +2122,21 @@ def update_service_fee(
 ):
     ticket = _load_ticket(db, reference, user)
     new_fee = int(body.service_fee_inr)
-    is_super_admin = user.role in SUPER_ADMIN_ROLES
+    can_waive_min = user.role in ADMIN_ROLES
     # A Super Admin may edit charges at any status (including CLOSED); everyone
     # else is held to the RESOLVING window by _can_manage_charges.
     if not _can_manage_charges(ticket, user):
         raise HTTPException(status_code=403, detail="Not allowed to edit charges on this ticket")
     # Out-of-warranty tickets carry a per-service-type minimum charge. Anyone
-    # who can edit charges may set it at/above that floor; only a Super Admin
-    # may go below it (a waiver/discount).
+    # who can edit charges may set it at/above that floor; an Admin-level user
+    # (Admin or Super Admin) may also go below it (a waiver/discount).
     min_fee = oow_min_service_fee_inr(ticket)
-    if new_fee < min_fee and not is_super_admin:
+    if new_fee < min_fee and not can_waive_min:
         raise HTTPException(
             status_code=422,
             detail=(
                 f"Service charge can't be below ₹{min_fee} for this ticket. "
-                "Only a Super Admin can set a lower amount."
+                "Only an Admin can set a lower amount."
             ),
         )
     prev_due = ticket.amount_due_inr
