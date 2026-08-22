@@ -69,6 +69,16 @@ class Settings(BaseSettings):
     supabase_bucket: str = Field(default="")       # e.g. sk-pos-care-uploads
     supabase_signed_url_ttl_seconds: int = Field(default=604800)  # 7 days
 
+    # Amazon S3 storage (only required when storage_backend="s3") — the AWS
+    # deployment. Credentials come from the standard AWS credential chain
+    # (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars on the VM).
+    # IMPORTANT: sign with a dedicated IAM *user* access key — instance-role
+    # temporary credentials silently cap presigned URLs at ~6 hours, breaking
+    # the 7-day links embedded in support emails.
+    s3_bucket: str = Field(default="")             # e.g. skposcare-uploads-prod
+    s3_region: str = Field(default="ap-south-1")
+    s3_signed_url_ttl_seconds: int = Field(default=604800)  # 7 days (SigV4 max)
+
     # WhatsApp notifications via Twilio — optional staff alerts on new ticket.
     # Silent no-op when any of the first three are blank, so the app deploys
     # cleanly before Twilio has been configured.
