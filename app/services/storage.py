@@ -1,9 +1,11 @@
 """Pluggable file storage layer.
 
-Two backends ship out of the box:
+Three backends ship out of the box:
   - "local"    — writes to LOCAL_UPLOAD_DIR on disk; served via /uploads
   - "supabase" — uploads to a Supabase Storage bucket (private), serves files
                  via short-lived signed URLs
+  - "s3"       — uploads to a private Amazon S3 bucket, serves files via
+                 presigned URLs (the AWS deployment)
 
 Switch via the `STORAGE_BACKEND` env variable. The rest of the app uses the
 `save_uploads()` and `cleanup_ticket_files()` helpers at the bottom of this
@@ -313,6 +315,135 @@ class SupabaseStorage(Storage):
             return f"{self.url}/storage/v1/object/{self.bucket}/{stored_key}"
 
 
+# --------------------------- Amazon S3 ------------------------------------- #
+
+class S3Storage(Storage):
+    """Uploads to a private Amazon S3 bucket and serves files via presigned URLs.
+
+    Mirrors SupabaseStorage 1:1: the DB stores the bare object key
+    (e.g. "AC-2026-00001/photo.jpg"); a fresh presigned GET URL is minted every
+    time the file is fetched. TTL comes from S3_SIGNED_URL_TTL_SECONDS
+    (default 604800 = 7 days — the SigV4 maximum), matching the Supabase
+    behaviour so links in old support emails keep the same lifetime.
+
+    NOTE: a presigned URL only outlives the credentials that signed it. Sign
+    with a dedicated IAM *user* access key (long-lived, scoped to this bucket).
+    Instance-role temporary credentials would silently cap links at ~6 hours.
+    """
+
+    def __init__(self) -> None:
+        s = get_settings()
+        self.bucket = (s.s3_bucket or "").strip()
+        self.region = (s.s3_region or "ap-south-1").strip()
+        self.ttl = s.s3_signed_url_ttl_seconds
+        if not self.bucket:
+            raise RuntimeError("STORAGE_BACKEND=s3 requires S3_BUCKET to be set.")
+        try:
+            import boto3  # imported lazily so non-S3 setups don't need it
+            from botocore.config import Config as _BotoConfig
+        except ImportError as e:  # pragma: no cover
+            raise RuntimeError(
+                "STORAGE_BACKEND=s3 requires the boto3 package "
+                "(pip install -r requirements.txt)."
+            ) from e
+        from botocore.exceptions import BotoCoreError, ClientError
+        self._errors = (BotoCoreError, ClientError)
+        # SigV4 + virtual-hosted addressing → region-stable presigned URLs.
+        self._client = boto3.client(
+            "s3",
+            region_name=self.region,
+            config=_BotoConfig(
+                signature_version="s3v4",
+                s3={"addressing_style": "virtual"},
+            ),
+        )
+
+    # -- internal ---------------------------------------------------------- #
+
+    def _put(self, body: bytes, content_type: str, key: str) -> None:
+        try:
+            self._client.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=body,
+                ContentType=content_type or "application/octet-stream",
+            )
+        except self._errors as e:
+            logger.exception("S3 upload failed for %s", key)
+            raise HTTPException(
+                status_code=502,
+                detail=f"Storage upload failed ({type(e).__name__}). Check bucket name and AWS credentials.",
+            )
+        logger.info("Uploaded s3://%s/%s (%d bytes)", self.bucket, key, len(body))
+
+    # -- Storage interface -------------------------------------------------- #
+
+    def save(self, file: UploadFile, ticket_reference: str, filename: str) -> dict:
+        # Read into memory (max 50MB enforced) — same approach as Supabase.
+        body = file.file.read()
+        size = len(body)
+        if size > MAX_FILE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"File too large: {file.filename} (max 50 MB)",
+            )
+        key = f"{ticket_reference}/{filename}"
+        self._put(body, file.content_type or "application/octet-stream", key)
+        return {
+            "filename": filename,
+            "content_type": file.content_type or "application/octet-stream",
+            "size_bytes": size,
+            "storage_url": key,  # bare object key; presigned URL minted on demand
+        }
+
+    def save_bytes(self, content: bytes, content_type: str, ticket_reference: str, filename: str) -> dict:
+        size = len(content)
+        if size > MAX_FILE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"File too large: {filename} (max 50 MB)",
+            )
+        key = f"{ticket_reference}/{filename}"
+        self._put(content, content_type, key)
+        return {
+            "filename": filename,
+            "content_type": content_type,
+            "size_bytes": size,
+            "storage_url": key,
+        }
+
+    def public_url(self, stored_key: str) -> str:
+        """Mint a fresh presigned GET URL for the given object key."""
+        try:
+            return self._client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self.bucket, "Key": stored_key},
+                ExpiresIn=self.ttl,
+            )
+        except Exception:
+            logger.exception("Failed to presign URL for %s", stored_key)
+            # Non-working (private bucket) fallback rather than crashing the request.
+            return f"https://{self.bucket}.s3.{self.region}.amazonaws.com/{stored_key}"
+
+    def cleanup(self, ticket_reference: str) -> None:
+        """Best-effort delete of every object under the ticket's prefix."""
+        try:
+            prefix = f"{ticket_reference}/"
+            paginator = self._client.get_paginator("list_objects_v2")
+            keys: List[dict] = []
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+                keys.extend({"Key": o["Key"]} for o in page.get("Contents", []))
+            for i in range(0, len(keys), 1000):  # delete_objects caps at 1000
+                self._client.delete_objects(
+                    Bucket=self.bucket,
+                    Delete={"Objects": keys[i : i + 1000], "Quiet": True},
+                )
+            if keys:
+                logger.info("Cleaned up %d S3 object(s) under %s", len(keys), prefix)
+        except Exception:
+            logger.exception("S3 cleanup failed for %s (ignoring)", ticket_reference)
+
+
 # --------------------------------------------------------------------------- #
 # Factory + module-level public API                                           #
 # --------------------------------------------------------------------------- #
@@ -329,11 +460,13 @@ def get_storage() -> Storage:
     backend = (get_settings().storage_backend or "local").strip().lower()
     if backend == "supabase":
         _storage_instance = SupabaseStorage()
+    elif backend == "s3":
+        _storage_instance = S3Storage()
     elif backend == "local":
         _storage_instance = LocalStorage()
     else:
         raise RuntimeError(
-            f"Unknown STORAGE_BACKEND={backend!r}. Use 'local' or 'supabase'."
+            f"Unknown STORAGE_BACKEND={backend!r}. Use 'local', 'supabase', or 's3'."
         )
     logger.info("Storage backend: %s", backend)
     return _storage_instance
