@@ -30,6 +30,7 @@ from ..models.ticket import (
     WarrantyStatus,
     WorkNote,
 )
+from ..models.shipment import TicketShipment
 from ..models.user import User, UserRole, ADMIN_MANAGER_ROLES, ADMIN_ROLES, SUPER_ADMIN_ROLES
 from .spares import oow_min_service_fee_inr
 
@@ -602,7 +603,7 @@ def collect_payment(db: Session, ticket: Ticket, actor: User, amount_inr: int) -
 
 def reconcile_payment_after_charge_edit(
     db: Session, ticket: Ticket, actor: User, previous_due_inr: int
-) -> None:
+) -> bool:
     """Re-open the payment gate after a billing edit changes what's owed.
 
     A Super Admin may correct charges at any status, including after CLOSE.
@@ -616,50 +617,95 @@ def reconcile_payment_after_charge_edit(
       * still paid in full → AWAITING_VERIFICATION (an Admin re-confirms)
 
     Tickets that were never settled (PENDING) just keep their running
-    balance — nothing to re-open. Does not commit; the caller's endpoint
-    commits once after all its changes.
+    balance — nothing to re-open.
+
+    The edit can also remove the last obstacle instead: a RESOLVED ticket
+    that was held only for payment, whose charges an Admin just waived to
+    nothing. The close points that normally finish a ticket (last signature,
+    Admin payment verification) have already run for it, so it is closed
+    HERE — otherwise it would sit RESOLVED forever with nothing owed and
+    nothing to verify. Returns True when this call closed the ticket; the
+    caller must notify the sales rep AFTER its commit. Does not commit; the
+    caller's endpoint commits once after all its changes.
     """
     if ticket.payment_status is None:
-        return  # legacy pre-tracking ticket — never gated, stays that way
+        return False  # legacy pre-tracking ticket — never gated, stays that way
     if ticket.amount_due_inr == previous_due_inr:
-        return  # edit didn't change the total — nothing to re-open
+        return False  # edit didn't change the total — nothing to re-open
     settled = ticket.payment_status in (
         PaymentStatus.COLLECTED.value,
         PaymentStatus.AWAITING_VERIFICATION.value,
         PaymentStatus.VERIFIED.value,
     )
-    if not settled:
-        return
-    previous_status = ticket.payment_status
-    if not payment_required(ticket):
-        # Charges waived to nothing — no money owed, so nothing to verify.
-        # PENDING with a ₹0 due is the inert state (no gate, no queue).
-        ticket.payment_status = PaymentStatus.PENDING.value
-    elif ticket.amount_pending_inr > 0:
-        ticket.payment_status = PaymentStatus.PENDING.value
-    else:
-        ticket.payment_status = PaymentStatus.AWAITING_VERIFICATION.value
-    # The old verification stamped the old figures — clear it so the new
-    # amounts need their own sign-off.
-    ticket.payment_verified_at = None
-    ticket.payment_verified_by_id = None
+    if settled:
+        previous_status = ticket.payment_status
+        if not payment_required(ticket):
+            # Charges waived to nothing — no money owed, so nothing to verify.
+            # PENDING with a ₹0 due is the inert state (no gate, no queue).
+            ticket.payment_status = PaymentStatus.PENDING.value
+        elif ticket.amount_pending_inr > 0:
+            ticket.payment_status = PaymentStatus.PENDING.value
+        else:
+            ticket.payment_status = PaymentStatus.AWAITING_VERIFICATION.value
+        # The old verification stamped the old figures — clear it so the new
+        # amounts need their own sign-off.
+        ticket.payment_verified_at = None
+        ticket.payment_verified_by_id = None
+        _log_event(
+            db, ticket=ticket, actor=actor, event_type="PAYMENT_REOPENED",
+            payload={
+                "previous_due_inr": previous_due_inr,
+                "new_due_inr": ticket.amount_due_inr,
+                "collected_inr": ticket.amount_collected_inr,
+                "pending_inr": ticket.amount_pending_inr,
+                "from_payment_status": previous_status,
+                "to_payment_status": ticket.payment_status,
+            },
+            note="Charges edited after payment was settled — needs Admin verification again.",
+        )
+        logger.info(
+            "Payment re-opened on %s by %s: due %s -> %s, payment %s -> %s",
+            ticket.reference, actor.username, previous_due_inr,
+            ticket.amount_due_inr, previous_status, ticket.payment_status,
+        )
+    return _close_after_charge_edit(db, ticket, actor)
+
+
+def _close_after_charge_edit(db: Session, ticket: Ticket, actor: User) -> bool:
+    """Close a RESOLVED ticket whose billing edit just removed the payment
+    gate — signed off, nothing owed, no shipment in transit. Returns True if
+    the ticket was closed. Does not commit."""
+    if ticket.status != TicketStatus.RESOLVED.value:
+        return False
+    if payment_blocks_close(ticket):
+        return False
+    if not signoff_complete(ticket):
+        return False
+    # Same rule as signing: spare-parts shipments still in transit block the
+    # RESOLVED → CLOSED transition. Here it simply waits (no error) — the
+    # ticket closes via the normal delivery flow once everything lands.
+    undelivered = (
+        db.query(TicketShipment)
+        .filter(
+            TicketShipment.ticket_id == ticket.id,
+            TicketShipment.delivered_at.is_(None),
+        )
+        .count()
+    )
+    if undelivered:
+        return False
+    prev = ticket.status
+    ticket.status = TicketStatus.CLOSED.value
     _log_event(
-        db, ticket=ticket, actor=actor, event_type="PAYMENT_REOPENED",
-        payload={
-            "previous_due_inr": previous_due_inr,
-            "new_due_inr": ticket.amount_due_inr,
-            "collected_inr": ticket.amount_collected_inr,
-            "pending_inr": ticket.amount_pending_inr,
-            "from_payment_status": previous_status,
-            "to_payment_status": ticket.payment_status,
-        },
-        note="Charges edited after payment was settled — needs Admin verification again.",
+        db, ticket=ticket, actor=actor, event_type="CLOSED",
+        from_status=prev, to_status=ticket.status,
+        note="Closed after a billing edit — nothing owed and the work is already signed off.",
     )
     logger.info(
-        "Payment re-opened on %s by %s: due %s -> %s, payment %s -> %s",
-        ticket.reference, actor.username, previous_due_inr,
-        ticket.amount_due_inr, previous_status, ticket.payment_status,
+        "Ticket %s closed after charge edit by %s — nothing due, sign-off complete",
+        ticket.reference, actor.username,
     )
+    return True
 
 
 def verify_payment(

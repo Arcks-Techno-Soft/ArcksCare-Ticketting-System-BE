@@ -90,6 +90,7 @@ from ..services.push import (
 )
 from ..services.whatsapp import send_engineer_assignment_alert
 from ..services.ticket_notify import notify_sales_rep_assigned as notify_ticket_sales_rep_assigned
+from ..services.ticket_notify import notify_sales_rep_closed as notify_ticket_sales_rep_closed
 from ..services.signing import (
     generate_field_sign_link,
     record_customer_signature_via_engineer,
@@ -2044,8 +2045,10 @@ def add_ticket_spare(
     db.refresh(ticket)
     # A settled payment described the OLD total — send it back to the
     # verification queue if this edit changed what's owed.
-    reconcile_payment_after_charge_edit(db, ticket, user, prev_due)
+    closed_now = reconcile_payment_after_charge_edit(db, ticket, user, prev_due)
     db.commit()
+    if closed_now:
+        notify_ticket_sales_rep_closed(ticket.id)
     logger.info(
         "Added spare '%s' x%d to %s by %s",
         spare.name, spare.quantity, ticket.reference, user.username,
@@ -2081,8 +2084,10 @@ def update_ticket_spare(
     db.commit()
     db.refresh(spare)
     db.refresh(ticket)
-    reconcile_payment_after_charge_edit(db, ticket, user, prev_due)
+    closed_now = reconcile_payment_after_charge_edit(db, ticket, user, prev_due)
     db.commit()
+    if closed_now:
+        notify_ticket_sales_rep_closed(ticket.id)
     _sync_charges_pdf(db, ticket, user)
     return spare
 
@@ -2108,8 +2113,10 @@ def remove_ticket_spare(
     db.delete(spare)
     db.commit()
     db.refresh(ticket)
-    reconcile_payment_after_charge_edit(db, ticket, user, prev_due)
+    closed_now = reconcile_payment_after_charge_edit(db, ticket, user, prev_due)
     db.commit()
+    if closed_now:
+        notify_ticket_sales_rep_closed(ticket.id)
     _sync_charges_pdf(db, ticket, user)
     return None
 
@@ -2143,9 +2150,11 @@ def update_service_fee(
         )
     prev_due = ticket.amount_due_inr
     ticket.service_fee_inr = new_fee
-    reconcile_payment_after_charge_edit(db, ticket, user, prev_due)
+    closed_now = reconcile_payment_after_charge_edit(db, ticket, user, prev_due)
     db.commit()
     db.refresh(ticket)
+    if closed_now:
+        notify_ticket_sales_rep_closed(ticket.id)
     _sync_charges_pdf(db, ticket, user)
     return compute_charges(ticket)
 
