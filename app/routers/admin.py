@@ -984,9 +984,13 @@ def remove_ticket_engineer(
 def close_preview(
     reference: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role(UserRole.SUPER_ADMIN)),
+    user: User = Depends(require_role(UserRole.ADMIN)),
 ):
-    """Summary + 'what's still pending' shown before an Admin/Owner force-closes."""
+    """Summary + 'what's still pending' shown before an Admin/Owner force-closes.
+
+    Admin-level since 2026-09-04 (require_role(ADMIN) also admits SUPER_ADMIN and
+    the legacy OWNER); it must match the force-close gate below or the dialog
+    would 403 on its preview for a plain Admin."""
     ticket = _load_ticket(db, reference, user)
     out = ClosePreviewOut.model_validate(ticket)
     out.pending = compute_close_pending(ticket)
@@ -998,9 +1002,13 @@ def force_close_ticket(
     reference: str,
     body: ForceCloseRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role(UserRole.SUPER_ADMIN)),
+    user: User = Depends(require_role(UserRole.ADMIN)),
 ):
-    """Admin/Owner override: close a ticket from ANY status (reason required)."""
+    """Admin/Owner override: close a ticket from ANY status (reason required).
+
+    Admin-level since 2026-09-04. The service layer re-checks via
+    _require_admin_level, so this dependency is defence in depth, not the only
+    gate. Soft-delete below stays SUPER_ADMIN."""
     ticket = _load_ticket(db, reference, user)
     return force_close(db, ticket, user, body.reason)
 
