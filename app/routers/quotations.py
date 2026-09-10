@@ -11,7 +11,8 @@ import logging
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
+from pydantic import ValidationError
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload
 
@@ -19,16 +20,21 @@ from ..database import get_db
 from ..models.quotation import Quotation
 from ..models.user import User, UserRole
 from ..schemas.quotation import (
+    ItemImageOut,
     NextReferenceOut,
     QuotationDraft,
     QuotationListOut,
     QuotationOut,
+    QuotationProductIn,
     QuotationProductOut,
+    QuotationProductPatch,
+    ReorderProductsIn,
     SignatoryOut,
 )
 from ..services import quotation_brand as brand
 from ..services.auth import require_role
-from ..services.quotation_fixtures import SEED_PRODUCTS
+from ..services import quotation_catalogue as catalogue
+from ..services.quotation_catalogue import product_to_out
 from ..services.quotation_pdf import render_quotation_pdf
 from ..services.quotation_raster import pdf_page_to_png
 from ..services.quotation_service import (
@@ -90,15 +96,70 @@ def presets(_user: User = AdminUser):
     }
 
 
+# ----------------------------- catalogue ---------------------------------- #
+
 @router.get("/products", response_model=list[QuotationProductOut], summary="Product catalogue")
-def list_products(q: Optional[str] = Query(None), _user: User = AdminUser):
-    """Read-only seed catalogue (the three products from the samples) until
-    the DB-backed catalogue lands in Phase 4 — same response shape."""
-    rows = [QuotationProductOut(**p) for p in SEED_PRODUCTS]
-    if q:
-        needle = q.strip().lower()
-        rows = [r for r in rows if needle in f"{r.brand or ''} {r.model or ''} {r.name}".lower()]
-    return rows
+def list_products(
+    q: Optional[str] = Query(None, description="name / brand / model contains"),
+    active: str = Query("true", pattern="^(true|false|all)$"),
+    db: Session = Depends(get_db),
+    _user: User = AdminUser,
+):
+    return [product_to_out(p) for p in catalogue.list_products(db, q=q, active=active)]
+
+
+def _parse_payload(payload: str, model):
+    try:
+        return model.model_validate_json(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors())
+
+
+@router.post("/products", response_model=QuotationProductOut, status_code=status.HTTP_201_CREATED,
+             summary="Add a catalogue product (multipart: payload JSON + optional image)")
+async def create_product(
+    payload: str = Form(..., description="QuotationProductIn as JSON"),
+    image: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+    user: User = AdminUser,
+):
+    body = _parse_payload(payload, QuotationProductIn)
+    img = await catalogue.read_image_upload(image) if image is not None and image.filename else None
+    return product_to_out(catalogue.create_product(db, body, user.id, img))
+
+
+@router.post("/products/reorder", response_model=list[QuotationProductOut], summary="Set sort order")
+def reorder_products(body: ReorderProductsIn, db: Session = Depends(get_db), _user: User = AdminUser):
+    return [product_to_out(p) for p in catalogue.reorder_products(db, body.ids)]
+
+
+@router.patch("/products/{product_id}", response_model=QuotationProductOut,
+              summary="Edit a catalogue product (multipart: payload JSON + optional image)")
+async def update_product(
+    product_id: int,
+    payload: str = Form("{}"),
+    image: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+    _user: User = AdminUser,
+):
+    p = catalogue.get_product_or_404(db, product_id)
+    body = _parse_payload(payload, QuotationProductPatch)
+    img = await catalogue.read_image_upload(image) if image is not None and image.filename else None
+    return product_to_out(catalogue.update_product(db, p, body, img))
+
+
+@router.delete("/products/{product_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Retire a product (soft delete)")
+def delete_product(product_id: int, db: Session = Depends(get_db), _user: User = AdminUser):
+    catalogue.retire_product(db, catalogue.get_product_or_404(db, product_id))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/item-images", response_model=ItemImageOut, status_code=status.HTTP_201_CREATED,
+             summary="Upload a one-off item picture")
+async def upload_item_image(image: UploadFile = File(...), _user: User = AdminUser):
+    data, ctype, ext = await catalogue.read_image_upload(image)
+    key = catalogue.store_item_image(data, ctype, ext)
+    return ItemImageOut(storage_key=key, url=catalogue.image_url_for(key, None) or "")
 
 
 @router.post(
@@ -115,9 +176,10 @@ def list_products(q: Optional[str] = Query(None), _user: User = AdminUser):
 def preview_quotation(
     draft: QuotationDraft,
     format: str = Query("pdf", pattern="^(pdf|png)$"),
+    db: Session = Depends(get_db),
     _user: User = AdminUser,
 ) -> Response:
-    model = build_render_model(draft)
+    model = build_render_model(draft, db)
     try:
         pdf = render_quotation_pdf(model)
     except Exception:

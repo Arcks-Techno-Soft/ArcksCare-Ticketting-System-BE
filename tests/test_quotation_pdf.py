@@ -151,3 +151,39 @@ def test_preview_validation_errors(client):
     bad = copy.deepcopy(NAVAPAKAM_DRAFT)
     bad["items"][0]["image_asset"] = "../../.env"
     assert c.post("/api/v1/admin/quotations/preview", json=bad).status_code == 422
+
+
+# --------------------------- DOCX (Phase 3/4) ---------------------------- #
+
+def _soffice():
+    import shutil
+    for cand in (shutil.which("soffice"), "/Applications/LibreOffice.app/Contents/MacOS/soffice"):
+        if cand and __import__("os").path.exists(cand):
+            return cand
+    return None
+
+
+@pytest.mark.parametrize("name", ["navapakam", "happy-table"])
+def test_docx_renders_and_fits_one_page_under_font_substitution(name, tmp_path):
+    """The Word copy must stay a single page even where Lucida Fax / Calibri
+    are missing (LibreOffice substitutes wider fonts) — the trailing
+    paragraphs Word needs around nested tables used to push the footer over."""
+    import subprocess
+
+    from app.services.quotation_docx import render_quotation_docx
+    from app.services.quotation_fixtures import FIXTURES
+    from app.services.quotation_service import build_render_model_from_dict
+
+    data = render_quotation_docx(build_render_model_from_dict(FIXTURES[name]))
+    assert data[:2] == b"PK"
+    soffice = _soffice()
+    if not soffice:
+        pytest.skip("LibreOffice not installed — cannot rasterise DOCX")
+    src = tmp_path / f"{name}.docx"
+    src.write_bytes(data)
+    subprocess.run([soffice, "--headless", "--convert-to", "pdf", "--outdir", str(tmp_path), str(src)],
+                   check=True, capture_output=True, timeout=180)
+    pdf = (tmp_path / f"{name}.pdf").read_bytes()
+    assert _pages(pdf) == 1
+    text = _text(pdf)
+    assert "OFFICE :" in text and "BANK DETAILS" in text

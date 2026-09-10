@@ -49,6 +49,9 @@ class QuotationProduct(Base):
 
     image_storage_key: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     image_content_type: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    # Bundled seed photo (file under assets/quotation/products) for the three
+    # products shipped with the app; uploads use image_storage_key instead.
+    image_asset: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
 
     default_row_style: Mapped[str] = mapped_column(String(10), default="DETAILED")
     active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)

@@ -62,6 +62,11 @@ _uploads_dir = Path(settings.local_upload_dir)
 _uploads_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploads")
 
+# Bundled quotation product photos (the three sample products), used for
+# catalogue thumbnails in the web app. Not sensitive — they print on quotations.
+from .services.quotation_brand import PRODUCT_IMAGES_DIR as _q_products_dir  # noqa: E402
+app.mount("/static/quotation-products", StaticFiles(directory=str(_q_products_dir)), name="quotation-products")
+
 
 @app.on_event("startup")
 def _bootstrap_db() -> None:
@@ -155,6 +160,8 @@ def _bootstrap_db() -> None:
     warranties_router.ensure_warranty_invoice_number_column(engine)
     from .services.quotation_service import ensure_quotation_item_columns
     ensure_quotation_item_columns(engine)
+    from .services.quotation_catalogue import ensure_quotation_product_columns
+    ensure_quotation_product_columns(engine)
     # Provenance columns used by the historical Zoho warranty import.
     warranties_router.ensure_warranty_source_columns(engine)
     Base.metadata.create_all(bind=engine)
@@ -171,6 +178,9 @@ def _bootstrap_db() -> None:
 
     with SessionLocal() as db:
         seed_initial_users(db)
+        # Quotation catalogue: the three sample products, once (matched by name).
+        from .services.quotation_catalogue import seed_quotation_products
+        seed_quotation_products(db)
         seed_spare_catalog(db)
         # Fake/demo tickets are dev fixtures only. They are additive and
         # re-create themselves even after deletion, so they must never run
