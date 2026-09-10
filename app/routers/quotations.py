@@ -35,10 +35,10 @@ from ..services.quotation_service import (
     build_render_model,
     issue_quotation,
     peek_next_reference,
+    get_quotation_file,
     quotation_summary,
+    quotation_to_draft,
     quotation_to_out,
-    read_storage_bytes,
-    reference_filename,
 )
 
 logger = logging.getLogger("skposcare.quotation")
@@ -196,24 +196,30 @@ def get_quotation(quotation_id: int, db: Session = Depends(get_db), _user: User 
     return quotation_to_out(_get_or_404(db, quotation_id))
 
 
-@router.get("/{quotation_id}/file", summary="Download the stored document", response_class=Response)
+@router.get("/{quotation_id}/file", summary="Download the document (pdf | docx | png | jpeg)", response_class=Response)
 def download_quotation_file(
     quotation_id: int,
-    format: str = Query("pdf", pattern="^(pdf)$"),
+    format: str = Query("pdf", pattern="^(pdf|docx|png|jpeg)$"),
     db: Session = Depends(get_db),
     _user: User = AdminUser,
 ):
+    """PDF is the stored document of record. Word (an editable copy), PNG and
+    JPEG are rendered on first request and cached back to storage."""
     q = _get_or_404(db, quotation_id)
-    if not q.pdf_storage_key:
-        raise HTTPException(status_code=404, detail="No PDF stored for this quotation")
-    data = read_storage_bytes(q.pdf_storage_key)
-    if data is None:
-        raise HTTPException(status_code=502, detail="Stored PDF could not be read")
+    data, media_type, filename = get_quotation_file(db, q, format)
     return Response(
         data,
-        media_type="application/pdf",
+        media_type=media_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{reference_filename(q.reference)}"',
+            "Content-Disposition": f'attachment; filename="{filename}"',
             "Access-Control-Expose-Headers": "Content-Disposition",
         },
     )
+
+
+@router.post("/{quotation_id}/duplicate", response_model=QuotationDraft, summary="Draft a copy of a quotation")
+def duplicate_quotation(quotation_id: int, db: Session = Depends(get_db), _user: User = AdminUser):
+    """Returns a draft to pre-fill the form: reference cleared (a new number
+    is assigned on submit), date = today, every item copied, and
+    `duplicated_from_id` set so the issued row records its origin."""
+    return quotation_to_draft(_get_or_404(db, quotation_id), as_duplicate=True)
