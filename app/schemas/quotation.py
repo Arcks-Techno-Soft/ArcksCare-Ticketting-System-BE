@@ -158,6 +158,9 @@ class QuotationDraft(BaseModel):
 
     items: List[QuotationItemIn] = Field(min_length=1, max_length=MAX_ITEMS)
 
+    # Set by POST /{id}/duplicate; recorded on the issued row for traceability.
+    duplicated_from_id: Optional[int] = None
+
     @field_validator(
         "reference", "customer_gstin", "customer_pan", "contact_name", "contact_phone",
         "contact_email", "subject_line", "note_text", mode="before",

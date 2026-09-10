@@ -221,6 +221,7 @@ def issue_quotation(db: Session, draft: QuotationDraft, user: User) -> Quotation
         grand_total=model.totals.grand_total,
         created_by_id=user.id,
         issued_at=now,
+        duplicated_from_id=_existing_quotation_id(db, final.duplicated_from_id),
     )
     for pos, (item, lt) in enumerate(zip(final.items, model.totals.line_totals), start=1):
         q.items.append(QuotationItem(
@@ -262,6 +263,101 @@ def issue_quotation(db: Session, draft: QuotationDraft, user: User) -> Quotation
         )
     db.refresh(q)
     return q
+
+
+def _existing_quotation_id(db: Session, quotation_id: Optional[int]) -> Optional[int]:
+    if quotation_id is None:
+        return None
+    return quotation_id if db.get(Quotation, quotation_id) is not None else None
+
+
+# ----------------------------- drafts from rows --------------------------- #
+
+def quotation_to_draft(q: Quotation, *, as_duplicate: bool = False) -> QuotationDraft:
+    """Rebuild the draft that produced a stored quotation. With
+    `as_duplicate` the reference is cleared, the date is today and
+    `duplicated_from_id` points at the source (plan §6 duplicate)."""
+    items = [
+        QuotationItemIn(
+            row_style=i.row_style, product_id=i.product_id, brand=i.brand,
+            brand_sub_label=i.brand_sub_label, model=i.model, headline=i.headline,
+            spec_lines=i.spec_lines, warranty_label=i.warranty_label,
+            unit_price=i.unit_price, quantity=i.quantity, include_image=bool(i.include_image),
+            image_storage_key=i.image_storage_key, image_asset=i.image_asset,
+        )
+        for i in sorted(q.items, key=lambda x: x.position)
+    ]
+    return QuotationDraft(
+        quotation_date=date.today() if as_duplicate else q.quotation_date,
+        reference=None if as_duplicate else q.reference,
+        customer_name=q.customer_name,
+        address_lines=[l for l in (q.address_lines or "").split("\n") if l],
+        customer_gstin=q.customer_gstin, customer_pan=q.customer_pan,
+        contact_name=q.contact_name, contact_phone=q.contact_phone, contact_email=q.contact_email,
+        subject_line=q.subject_line,
+        signatory_id=q.signatory_id if brand.get_signatory(q.signatory_id) else brand.DEFAULT_SIGNATORY_ID,
+        validity_days=q.validity_days, gst_rate=q.gst_rate,
+        totals_label_set=q.totals_label_set, note_text=q.note_text, note_style=q.note_style,
+        terms=list(q.terms or []), show_sl_no=q.show_sl_no, items=items,
+        duplicated_from_id=q.id if as_duplicate else q.duplicated_from_id,
+    )
+
+
+# ----------------------------- file formats ------------------------------ #
+
+FILE_FORMATS = {
+    # format: (media type, extension, storage-key attribute)
+    "pdf": ("application/pdf", "pdf", "pdf_storage_key"),
+    "docx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx", "docx_storage_key"),
+    "png": ("image/png", "png", "png_storage_key"),
+    "jpeg": ("image/jpeg", "jpg", "jpeg_storage_key"),
+}
+
+
+def get_quotation_file(db: Session, q: Quotation, fmt: str) -> tuple:
+    """(bytes, media_type, filename) for a stored quotation in `fmt`.
+
+    PDF = the stored document of record. The other three are rendered on
+    first request — DOCX from the quotation data, PNG/JPEG from the stored
+    PDF — and cached back to storage so later downloads are a plain read.
+    """
+    from .quotation_docx import render_quotation_docx
+    from .quotation_raster import pdf_page_to_jpeg, pdf_page_to_png, DOWNLOAD_DPI
+    from .storage import get_storage
+
+    if fmt not in FILE_FORMATS:
+        raise HTTPException(status_code=422, detail="format must be pdf, docx, png or jpeg")
+    media_type, ext, key_attr = FILE_FORMATS[fmt]
+    filename = reference_filename(q.reference, ext)
+
+    key = getattr(q, key_attr)
+    if key:
+        data = read_storage_bytes(key)
+        if data is not None:
+            return data, media_type, filename
+        if fmt == "pdf":
+            raise HTTPException(status_code=502, detail="Stored PDF could not be read")
+        logger.warning("Cached %s for %s unreadable — re-rendering", fmt, q.reference)
+    elif fmt == "pdf":
+        raise HTTPException(status_code=404, detail="No PDF stored for this quotation")
+
+    if fmt == "docx":
+        data = render_quotation_docx(build_render_model(quotation_to_draft(q)))
+    else:
+        pdf = read_storage_bytes(q.pdf_storage_key) if q.pdf_storage_key else None
+        if pdf is None:
+            raise HTTPException(status_code=502, detail="Stored PDF could not be read")
+        data = pdf_page_to_png(pdf, dpi=DOWNLOAD_DPI) if fmt == "png" else pdf_page_to_jpeg(pdf)
+
+    try:
+        stored = get_storage().save_bytes(data, media_type, storage_prefix(q.reference), filename)
+        setattr(q, key_attr, stored["storage_url"])
+        db.commit()
+    except Exception:
+        # Caching is an optimisation; the download itself must still succeed.
+        logger.exception("Could not cache %s for %s", fmt, q.reference)
+        db.rollback()
+    return data, media_type, filename
 
 
 # ----------------------------- outputs ----------------------------------- #

@@ -196,3 +196,115 @@ def test_presets(client):
     assert body["terms"]["POS"][0] == "Quotation validity for {days} Days"
     assert body["notes"]["CCTV"]["style"] == "RED_TEXT"
     assert body["totals_labels"]["SIMPLE"]["grand_total"] == "GRAND TOTAL"
+
+
+# --------------------------- Phase 3: formats + duplicate ---------------- #
+
+def _issue(c, **over):
+    r = c.post("/api/v1/admin/quotations", json=_draft(**over))
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def test_file_formats_render_once_and_cache(client, monkeypatch):
+    c, Session, tmp_path = client
+    q = _issue(c)
+    qid, base = q["id"], f"/api/v1/admin/quotations/{q['id']}/file"
+
+    import app.services.quotation_docx as docx_mod
+    calls = {"docx": 0}
+    real = docx_mod.render_quotation_docx
+
+    def counting(model):
+        calls["docx"] += 1
+        return real(model)
+
+    monkeypatch.setattr(docx_mod, "render_quotation_docx", counting)
+
+    r = c.get(f"{base}?format=docx")
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    assert r.headers["content-disposition"] == 'attachment; filename="1407SW001-2026-27.docx"'
+    assert r.content[:2] == b"PK"
+    assert calls["docx"] == 1
+    assert (tmp_path / "uploads" / "quotations" / "1407SW001-2026-27" / "1407SW001-2026-27.docx").is_file()
+
+    # Second download is served from the cache — no re-render.
+    r2 = c.get(f"{base}?format=docx")
+    assert r2.status_code == 200 and r2.content == r.content
+    assert calls["docx"] == 1
+    from app.models.quotation import Quotation
+    with Session() as s:
+        row = s.get(Quotation, qid)
+        assert row.docx_storage_key and row.docx_storage_key.endswith(".docx")
+        assert row.png_storage_key is None
+
+    png = c.get(f"{base}?format=png")
+    assert png.status_code == 200 and png.headers["content-type"] == "image/png"
+    assert png.headers["content-disposition"] == 'attachment; filename="1407SW001-2026-27.png"'
+    assert png.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+    jpg = c.get(f"{base}?format=jpeg")
+    assert jpg.status_code == 200 and jpg.headers["content-type"] == "image/jpeg"
+    assert jpg.headers["content-disposition"] == 'attachment; filename="1407SW001-2026-27.jpg"'
+    assert jpg.content[:3] == b"\xff\xd8\xff"
+
+    # 200 dpi A4 → 1654 × 2339 px.
+    from PIL import Image
+    import io
+    im = Image.open(io.BytesIO(jpg.content))
+    assert im.size == (1654, 2339) and im.mode == "RGB"
+
+    pdf = c.get(f"{base}?format=pdf")
+    assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF")
+    assert pdf.headers["content-disposition"] == 'attachment; filename="1407SW001-2026-27.pdf"'
+    assert c.get(f"{base}?format=doc").status_code == 422
+
+    with Session() as s:
+        row = s.get(Quotation, qid)
+        assert row.png_storage_key.endswith(".png") and row.jpeg_storage_key.endswith(".jpg")
+
+
+def test_duplicate_returns_a_valid_draft_that_reissues(client):
+    c, _, _ = client
+    src = _issue(c, reference="14072920/2026-27")
+    r = c.post(f"/api/v1/admin/quotations/{src['id']}/duplicate")
+    assert r.status_code == 200, r.text
+    draft = r.json()
+    assert draft["reference"] is None
+    assert draft["quotation_date"] == date.today().isoformat()
+    assert draft["duplicated_from_id"] == src["id"]
+    assert draft["customer_name"] == "NAVAPAKAM KITCHENS LLP"
+    assert draft["subject_line"] == "For Sarjapur Road outlet"
+    assert [i["headline"] for i in draft["items"]] == [i["headline"] for i in NAVAPAKAM_DRAFT["items"]]
+    assert draft["items"][0]["image_asset"] == "sk-pos-m95-touch-pos.png"
+    assert draft["items"][0]["include_image"] is True
+    assert draft["items"][0]["model"] == "Mighty Series\nM95"
+    assert draft["terms"] == src["terms"]
+
+    # The draft is a valid payload: preview works and issue assigns a fresh number.
+    assert c.post("/api/v1/admin/quotations/preview", json=draft).status_code == 200
+    issued = c.post("/api/v1/admin/quotations", json=draft)
+    assert issued.status_code == 201, issued.text
+    body = issued.json()
+    assert body["reference"] != src["reference"]
+    assert body["reference"].endswith(f"/{'2026-27' if date.today() < date(2027, 4, 1) else '2027-28'}")
+    assert body["duplicated_from_id"] == src["id"]
+    assert body["grand_total"] == src["grand_total"]
+    assert c.post("/api/v1/admin/quotations/999/duplicate").status_code == 404
+
+
+def test_phase3_routes_are_admin_only(client):
+    c, _, _ = client
+    q = _issue(c)
+    from app.main import app
+    from app.services.auth import get_current_user
+
+    class _M:
+        id = 2
+        role = "MANAGER"
+        active = True
+
+    app.dependency_overrides[get_current_user] = lambda: _M()
+    assert c.get(f"/api/v1/admin/quotations/{q['id']}/file?format=docx").status_code == 403
+    assert c.post(f"/api/v1/admin/quotations/{q['id']}/duplicate").status_code == 403
