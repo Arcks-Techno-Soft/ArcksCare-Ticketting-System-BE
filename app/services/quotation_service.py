@@ -81,25 +81,36 @@ def read_storage_bytes(storage_key: str) -> Optional[bytes]:
     return None
 
 
-def load_item_image(item: QuotationItemIn) -> Optional[bytes]:
-    """Bytes of the photo to print for an item, or None."""
-    if not item.include_image:
-        return None
-    if item.image_asset:
-        path = brand.bundled_product_images().get(item.image_asset)
+def _image_bytes(storage_key: Optional[str], image_asset: Optional[str]) -> Optional[bytes]:
+    if image_asset:
+        path = brand.bundled_product_images().get(image_asset)
         if path is not None:
             return path.read_bytes()
-    if item.image_storage_key:
-        return read_storage_bytes(item.image_storage_key)
+    if storage_key:
+        return read_storage_bytes(storage_key)
     return None
+
+
+def load_item_image(item: QuotationItemIn, db: Optional[Session] = None) -> Optional[bytes]:
+    """Bytes of the photo to print for an item, or None. A row with neither
+    an asset nor a storage key falls back to its catalogue product's picture."""
+    if not item.include_image:
+        return None
+    data = _image_bytes(item.image_storage_key, item.image_asset)
+    if data is None and item.product_id is not None and db is not None:
+        from .quotation_catalogue import product_image_source
+
+        key, asset = product_image_source(db, item.product_id)
+        data = _image_bytes(key, asset)
+    return data
 
 
 # ----------------------------- render model ------------------------------ #
 
-def build_render_model(draft: QuotationDraft) -> RenderModel:
+def build_render_model(draft: QuotationDraft, db: Optional[Session] = None) -> RenderModel:
     totals = compute_totals(((i.unit_price, i.quantity) for i in draft.items), draft.gst_rate)
     signatory = brand.get_signatory(draft.signatory_id) or brand.SIGNATORIES[0]
-    images: List[Optional[bytes]] = [load_item_image(i) for i in draft.items]
+    images: List[Optional[bytes]] = [load_item_image(i, db) for i in draft.items]
     return RenderModel(draft=draft, totals=totals, signatory=signatory, item_images=images)
 
 
@@ -187,8 +198,18 @@ def issue_quotation(db: Session, draft: QuotationDraft, user: User) -> Quotation
     else:
         reference = allocate_reference(db, draft.quotation_date, signatory)
 
-    final = draft.model_copy(update={"reference": reference})
-    model = build_render_model(final)
+    # Snapshot the catalogue picture onto each row so the quotation keeps
+    # rendering identically even if the product is edited or retired later.
+    from .quotation_catalogue import product_image_source
+
+    items = []
+    for item in draft.items:
+        if item.include_image and item.product_id is not None and not item.has_image_source:
+            key, asset = product_image_source(db, item.product_id)
+            item = item.model_copy(update={"image_storage_key": key, "image_asset": asset})
+        items.append(item)
+    final = draft.model_copy(update={"reference": reference, "items": items})
+    model = build_render_model(final, db)
     pdf = render_quotation_pdf(model)
 
     now = datetime.now(timezone.utc)

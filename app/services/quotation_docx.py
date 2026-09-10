@@ -209,9 +209,38 @@ def _add_text(paragraph, text: str, font: str, size: float, *, color=BLACK, red_
 def _para(cell, text: str, font: str, size: float, *, align=WD_ALIGN_PARAGRAPH.LEFT, color=BLACK,
           red_size=None, underline=False, new=False, line=None):
     p = cell.add_paragraph() if new else _first_para(cell)
-    _tight(p, align=align, line=line)
+    # Exact line spacing so a substituted font (Word/LibreOffice without
+    # Lucida Fax) cannot inflate row heights.
+    _tight(p, align=align, line=line if line is not None else max(size, red_size or 0) * 1.2)
     _add_text(p, text, font, size, color=color, red_size=red_size, underline=underline)
     return p
+
+
+def _collapse_empty_paras(cell) -> None:
+    """Word requires a paragraph after a nested table (python-docx adds one)
+    and keeps the cell's original one before it. Both are empty but take a
+    full Normal line each — squash them to 1 pt."""
+    for para in cell.paragraphs:
+        if para.text.strip():
+            continue
+        _tight(para)
+        para.paragraph_format.line_spacing = Pt(1)
+        for run in para.runs:
+            run.font.size = Pt(1)
+        pPr = para._p.get_or_add_pPr()
+        rPr = pPr.find(qn("w:rPr"))
+        if rPr is None:
+            rPr = OxmlElement("w:rPr")
+            pPr.append(rPr)
+        sz = OxmlElement("w:sz")
+        sz.set(qn("w:val"), "2")  # half-points → 1 pt paragraph mark
+        rPr.append(sz)
+
+
+def _nested(cell, rows: int, cols: int):
+    t = cell.add_table(rows=rows, cols=cols)
+    _collapse_empty_paras(cell)
+    return t
 
 
 def _picture(paragraph, data: bytes, max_w: float, max_h: float) -> None:
@@ -303,7 +332,8 @@ def _items_block(doc, m: RenderModel) -> None:
     ix = {k: i for i, k in enumerate(keys)}
     ncol = len(cols)
     compact_layout = all(i.row_style == RowStyle.COMPACT for i in d.items)
-    row_min = P.COMPACT_ROW_MIN_H if compact_layout else P.ROW_A_MIN_H
+    # Slightly tighter than the PDF: leaves headroom for font substitution.
+    row_min = P.COMPACT_ROW_MIN_H if compact_layout else P.ROW_A_MIN_H - 2.0
 
     # Count rows first (python-docx tables are easiest built with a known size).
     n_rows = 1
@@ -386,15 +416,13 @@ def _items_block(doc, m: RenderModel) -> None:
         wcell = cells[0].merge(cells[ix["MODEL"]])
         _valign(wcell, "center")
         if item.warranty_label:
-            inner = wcell.add_table(rows=1, cols=1)
+            inner = _nested(wcell, 1, 1)
             _table_setup(inner, [sum(widths[: ix["MODEL"] + 1]) - 4.0], margins=(0.5, 0.5, 1.0, 1.0))
             _row_height(inner.rows[0], P.WARRANTY_BOX_H, exact=True)
             ic = inner.cell(0, 0)
             _para(ic, item.warranty_label, FONT_SERIF, 7.0, align=WD_ALIGN_PARAGRAPH.CENTER)
             _valign(ic, "center")
             _cell_borders(ic, top=THIN, bottom=THIN, left=THIN, right=THIN)
-            _tight(wcell.paragraphs[0])
-            wcell.paragraphs[0].paragraph_format.line_spacing = Pt(1)
 
         spec = cells[ix["DESC"]]
         first = True
@@ -434,7 +462,7 @@ def _totals_block(doc, m: RenderModel) -> None:
     note = t.cell(0, 0)
     if d.note_text:
         if d.note_style == NoteStyle.GREEN_ON_BLACK:
-            inner = note.add_table(rows=3, cols=1)
+            inner = _nested(note, 3, 1)
             _table_setup(inner, [P.NOTE_W], margins=(0, 0, 1.5, 1.5))
             for rr in inner.rows:
                 _row_height(rr, P.TOTALS_ROW_H, exact=True)
@@ -443,20 +471,18 @@ def _totals_block(doc, m: RenderModel) -> None:
             _valign(mid, "center")
             _para(mid, d.note_text, FONT_SERIF, 7.6, color=GREEN)
         else:
-            inner = note.add_table(rows=1, cols=1)
+            inner = _nested(note, 1, 1)
             _table_setup(inner, [P.NOTE_W], margins=(1, 1, 3, 3))
             _row_height(inner.rows[0], P.TOTALS_ROW_H * 2, exact=True)
             c = inner.cell(0, 0)
             _valign(c, "center")
             _para(c, d.note_text, FONT_SERIF, 6.7, align=WD_ALIGN_PARAGRAPH.CENTER, color=RED)
             _cell_borders(c, top=THIN, bottom=THIN, left=THIN, right=THIN)
-        _tight(note.paragraphs[0])
-        note.paragraphs[0].paragraph_format.line_spacing = Pt(1)
 
     sub_l, gst_l, grand_l = brand.TOTALS_LABELS[d.totals_label_set.value]
     rows = [(sub_l, m.totals.subtotal), (gst_l.format(rate=fmt_rate(d.gst_rate)), m.totals.gst_amount),
             (grand_l, m.totals.grand_total)]
-    tot = t.cell(0, 2).add_table(rows=3, cols=2)
+    tot = _nested(t.cell(0, 2), 3, 2)
     _table_setup(tot, list(P.TOTALS_COLS), margins=(0.5, 0.5, 1.0, 1.0))
     for i, (label, amount) in enumerate(rows):
         _row_height(tot.rows[i], P.TOTALS_ROW_H, exact=True)
@@ -468,22 +494,20 @@ def _totals_block(doc, m: RenderModel) -> None:
         _cell_borders(ac, top=THIN, bottom=THIN, left=THIN, right=THICK)
     _cell_borders(tot.cell(0, 0), top=THICK); _cell_borders(tot.cell(0, 1), top=THICK)
     _cell_borders(tot.cell(2, 0), bottom=THICK); _cell_borders(tot.cell(2, 1), bottom=THICK)
-    _tight(t.cell(0, 2).paragraphs[0])
-    t.cell(0, 2).paragraphs[0].paragraph_format.line_spacing = Pt(1)
 
 
 def _terms_block(doc, d: QuotationDraft) -> None:
     terms = d.terms or []
     t = doc.add_table(rows=1 + len(terms), cols=2)
     _table_setup(t, list(P.TC_COLS), margins=(0.3, 0.3, 1.4, 1.0))
-    _row_height(t.rows[0], P.TC_HEADER_H)
+    _row_height(t.rows[0], P.TC_HEADER_H - 0.6)
     _para(t.cell(0, 0), "Sl No.", FONT_SERIF, 6.5, align=WD_ALIGN_PARAGRAPH.CENTER, underline=True)
     _para(t.cell(0, 1), "Terms & Conditions", FONT_SERIF, 6.5, underline=True)
     for i, line in enumerate(terms, start=1):
         red = (i - 1) == brand.RED_TERM_INDEX
         _para(t.cell(i, 0), str(i), FONT_SERIF, 6.0, align=WD_ALIGN_PARAGRAPH.CENTER)
         _para(t.cell(i, 1), line, FONT_SERIF, 7.0 if red else 5.4, color=RED if red else BLACK,
-              line=7.6 if red else 6.4)
+              line=7.4 if red else 6.2)
     _box(t, THICK)
 
 
@@ -491,7 +515,7 @@ def _bank_signature_block(doc, sig: brand.Signatory) -> None:
     t = doc.add_table(rows=1, cols=3)
     _table_setup(t, [P.BANK_W, P.BANK_SIG_GAP, P.SIG_W], margins=(0, 0, 0, 0))
 
-    bank = t.cell(0, 0).add_table(rows=2, cols=2)
+    bank = _nested(t.cell(0, 0), 2, 2)
     kv_w = sum(P.BANK_KV_COLS)
     _table_setup(bank, [kv_w, P.BANK_W - kv_w], margins=(0, 0, 0, 0))
     _row_height(bank.rows[0], P.BAND_H, exact=True)
@@ -513,11 +537,10 @@ def _bank_signature_block(doc, sig: brand.Signatory) -> None:
     qp.alignment = WD_ALIGN_PARAGRAPH.CENTER
     _picture(qp, brand.QR_SCAN_PAY.read_bytes(), 70.0, 56.0)
     _box(bank, THIN)
-    _tight(t.cell(0, 0).paragraphs[0]); t.cell(0, 0).paragraphs[0].paragraph_format.line_spacing = Pt(1)
 
-    sigt = t.cell(0, 2).add_table(rows=5, cols=1)
+    sigt = _nested(t.cell(0, 2), 5, 1)
     _table_setup(sigt, [P.SIG_W], margins=(0, 0, 0, 0))
-    heights = (P.BAND_H, 38.5, 9.0, 7.0, 7.0)
+    heights = (P.BAND_H, 36.0, 8.6, 6.8, 6.8)
     for row, h in zip(sigt.rows, heights):
         _row_height(row, h, exact=True)
     b = sigt.cell(0, 0)
@@ -531,7 +554,6 @@ def _bank_signature_block(doc, sig: brand.Signatory) -> None:
         _valign(c, "center")
         _para(c, text, FONT_SERIF, size, align=WD_ALIGN_PARAGRAPH.CENTER)
     _box(sigt, THIN)
-    _tight(t.cell(0, 2).paragraphs[0]); t.cell(0, 2).paragraphs[0].paragraph_format.line_spacing = Pt(1)
 
 
 def _footer_block(doc) -> None:
@@ -587,10 +609,10 @@ def render_quotation_docx(m: RenderModel) -> bytes:
 
     _header_block(doc, d, m.signatory)
     _items_block(doc, m)
-    _spacer(doc, 3.0)
+    _spacer(doc, 1.5)
     _totals_block(doc, m)
     _terms_block(doc, d)
-    _spacer(doc, 2.0)
+    _spacer(doc, 1.0)
     _bank_signature_block(doc, m.signatory)
     _footer_block(doc)
 

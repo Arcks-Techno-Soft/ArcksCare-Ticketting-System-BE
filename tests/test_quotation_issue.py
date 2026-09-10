@@ -91,6 +91,10 @@ def test_signatories_and_seed_products(client):
     c, _, _ = client
     sigs = c.get("/api/v1/admin/quotations/signatories").json()
     assert sigs[0]["name"] == "SRINIVAS NARAYAN" and sigs[0]["initials"] == "SW"
+    # The catalogue is DB-backed (Phase 4): seeded at startup, empty until then.
+    assert c.get("/api/v1/admin/quotations/products").json() == []
+    from tests.test_quotation_catalogue import _seed
+    _seed(c)
     prods = c.get("/api/v1/admin/quotations/products").json()
     assert len(prods) == 3 and prods[0]["image_asset"] == "sk-pos-m95-touch-pos.png"
     assert c.get("/api/v1/admin/quotations/products?q=s200e").json()[0]["model"] == "S200E"

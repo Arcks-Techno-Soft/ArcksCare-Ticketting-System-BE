@@ -99,7 +99,10 @@ class QuotationItemIn(BaseModel):
     def _key_prefix(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
-        if ".." in v or v.startswith("/") or not v.startswith(ALLOWED_IMAGE_KEY_PREFIXES):
+        # Local-disk storage hands back "/uploads/<key>" as the stored value;
+        # S3 hands back the bare key. Both must sit under an allowed prefix.
+        core = v[len("/uploads/"):] if v.startswith("/uploads/") else v
+        if ".." in v or core.startswith("/") or not core.startswith(ALLOWED_IMAGE_KEY_PREFIXES):
             raise ValueError(
                 "image_storage_key must start with one of "
                 + ", ".join(ALLOWED_IMAGE_KEY_PREFIXES)
@@ -261,10 +264,53 @@ class NextReferenceOut(BaseModel):
     date: date
 
 
+class QuotationProductIn(BaseModel):
+    """Create payload (multipart `payload` field). Every field optional on
+    PATCH via QuotationProductPatch."""
+    name: str = Field(min_length=1, max_length=200)
+    brand: Optional[str] = Field(default=None, max_length=80)
+    brand_sub_label: Optional[str] = Field(default=None, max_length=80)
+    model: Optional[str] = Field(default=None, max_length=120)
+    headline: str = Field(min_length=1, max_length=1000)
+    spec_lines: Optional[str] = Field(default=None, max_length=4000)
+    warranty_label: Optional[str] = Field(default=None, max_length=80)
+    default_unit_price: Optional[Decimal] = Field(default=None, ge=0, le=Decimal("999999999.99"), decimal_places=2)
+    default_row_style: RowStyle = RowStyle.DETAILED
+    sort_order: Optional[int] = Field(default=None, ge=0, le=100000)
+
+    @field_validator("brand", "brand_sub_label", "model", "spec_lines", "warranty_label", mode="before")
+    @classmethod
+    def _optional_blank(cls, v):
+        return _blank_to_none(v)
+
+    @field_validator("name", "headline")
+    @classmethod
+    def _strip_required(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("This field is required")
+        return v
+
+
+class QuotationProductPatch(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    brand: Optional[str] = Field(default=None, max_length=80)
+    brand_sub_label: Optional[str] = Field(default=None, max_length=80)
+    model: Optional[str] = Field(default=None, max_length=120)
+    headline: Optional[str] = Field(default=None, min_length=1, max_length=1000)
+    spec_lines: Optional[str] = Field(default=None, max_length=4000)
+    warranty_label: Optional[str] = Field(default=None, max_length=80)
+    default_unit_price: Optional[Decimal] = Field(default=None, ge=0, le=Decimal("999999999.99"), decimal_places=2)
+    default_row_style: Optional[RowStyle] = None
+    sort_order: Optional[int] = Field(default=None, ge=0, le=100000)
+    active: Optional[bool] = None
+    # True drops the current picture (bundled or uploaded).
+    remove_image: bool = False
+
+
 class QuotationProductOut(BaseModel):
-    """Catalogue entry. `id` is None for the bundled seed products served
-    before the DB catalogue exists (Phase 4)."""
-    id: Optional[int] = None
+    """Catalogue entry as the form and the catalogue page consume it."""
+    id: int
     brand: Optional[str] = None
     brand_sub_label: Optional[str] = None
     model: Optional[str] = None
@@ -276,6 +322,20 @@ class QuotationProductOut(BaseModel):
     default_row_style: RowStyle = RowStyle.DETAILED
     image_asset: Optional[str] = None
     image_storage_key: Optional[str] = None
+    # Viewable picture URL: absolute (presigned S3) or API-relative
+    # (/uploads/… or /static/…) — the web app prefixes relative ones.
+    image_url: Optional[str] = None
+    active: bool = True
+    sort_order: int = 0
+
+
+class ReorderProductsIn(BaseModel):
+    ids: List[int] = Field(min_length=1, max_length=500)
+
+
+class ItemImageOut(BaseModel):
+    storage_key: str
+    url: str
 
 
 class QuotationItemOut(BaseModel):
