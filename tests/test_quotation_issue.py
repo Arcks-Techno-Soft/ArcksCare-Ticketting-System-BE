@@ -1,0 +1,198 @@
+"""Phase 2: reference numbering + the issue transaction + read endpoints."""
+import copy
+from datetime import date
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.services.quotation_fixtures import NAVAPAKAM_DRAFT
+from app.services.quotation_service import financial_year, format_reference
+
+
+def test_financial_year_boundaries():
+    assert financial_year(date(2026, 4, 1)) == "2026-27"
+    assert financial_year(date(2026, 9, 11)) == "2026-27"
+    assert financial_year(date(2027, 3, 31)) == "2026-27"
+    assert financial_year(date(2027, 4, 1)) == "2027-28"
+    assert financial_year(date(2099, 12, 1)) == "2099-00"
+
+
+def test_format_reference():
+    assert format_reference(date(2026, 9, 14), "SW", 49) == "1409SW049/2026-27"
+    assert format_reference(date(2027, 1, 5), "SW", 1000) == "0501SW1000/2026-27"
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    """App with an in-memory SQLite DB, local storage in tmp_path, admin user."""
+    monkeypatch.setenv("STORAGE_BACKEND", "local")
+    monkeypatch.setenv("LOCAL_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.database import Base
+    from app.main import app
+    from app.models import quotation, user  # noqa: F401 — register tables
+    from app.services.auth import get_current_user
+    from app.database import get_db
+    from app.services.storage import reset_storage_cache
+
+    from app.config import get_settings
+    get_settings.cache_clear()  # settings are lru_cached — pick up the env overrides
+    reset_storage_cache()
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+
+    def _db():
+        db = Session()
+        try:
+            yield db
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    class _U:
+        id = 1
+        role = "ADMIN"
+        active = True
+
+    app.dependency_overrides[get_db] = _db
+    app.dependency_overrides[get_current_user] = lambda: _U()
+    try:
+        yield TestClient(app), Session, tmp_path
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)
+        reset_storage_cache()
+        get_settings.cache_clear()
+
+
+def _draft(**over):
+    d = copy.deepcopy(NAVAPAKAM_DRAFT)
+    d["reference"] = None
+    d.update(over)
+    return d
+
+
+def test_next_reference_is_a_peek_and_does_not_increment(client):
+    c, _, _ = client
+    r = c.get("/api/v1/admin/quotations/next-reference?date=2026-07-14")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"reference": "1407SW001/2026-27", "fy": "2026-27", "next_number": 1, "date": "2026-07-14"}
+    r2 = c.get("/api/v1/admin/quotations/next-reference?date=2026-07-15")
+    assert r2.json()["reference"] == "1507SW001/2026-27"
+
+
+def test_signatories_and_seed_products(client):
+    c, _, _ = client
+    sigs = c.get("/api/v1/admin/quotations/signatories").json()
+    assert sigs[0]["name"] == "SRINIVAS NARAYAN" and sigs[0]["initials"] == "SW"
+    prods = c.get("/api/v1/admin/quotations/products").json()
+    assert len(prods) == 3 and prods[0]["image_asset"] == "sk-pos-m95-touch-pos.png"
+    assert c.get("/api/v1/admin/quotations/products?q=s200e").json()[0]["model"] == "S200E"
+
+
+def test_create_assigns_reference_stores_pdf_and_inserts_rows(client):
+    c, Session, tmp_path = client
+    r = c.post("/api/v1/admin/quotations", json=_draft())
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["reference"] == "1407SW001/2026-27"
+    assert body["status"] == "ISSUED"
+    assert body["grand_total"] == "58374.60" and body["subtotal"] == "49470.00"
+    assert body["signatory_name"] == "SRINIVAS NARAYAN"
+    assert body["address_lines"] == NAVAPAKAM_DRAFT["address_lines"]
+    assert len(body["items"]) == 4
+    assert body["items"][0]["image_asset"] == "sk-pos-m95-touch-pos.png"
+    assert body["items"][3]["line_total"] == "870.00"
+    assert body["pdf_url"].endswith("/uploads/quotations/1407SW001-2026-27/1407SW001-2026-27.pdf")
+
+    stored = tmp_path / "uploads" / "quotations" / "1407SW001-2026-27" / "1407SW001-2026-27.pdf"
+    assert stored.is_file() and stored.read_bytes().startswith(b"%PDF")
+
+    # Sequence advanced; next number is 002 and a new FY restarts at 001.
+    assert c.get("/api/v1/admin/quotations/next-reference?date=2026-07-14").json()["next_number"] == 2
+    r2 = c.post("/api/v1/admin/quotations", json=_draft(quotation_date="2027-04-01"))
+    assert r2.status_code == 201 and r2.json()["reference"] == "0104SW001/2027-28"
+    r3 = c.post("/api/v1/admin/quotations", json=_draft())
+    assert r3.json()["reference"] == "1407SW002/2026-27"
+
+    # Detail + download.
+    qid = body["id"]
+    det = c.get(f"/api/v1/admin/quotations/{qid}")
+    assert det.status_code == 200 and det.json()["reference"] == "1407SW001/2026-27"
+    f = c.get(f"/api/v1/admin/quotations/{qid}/file")
+    assert f.status_code == 200
+    assert f.headers["content-type"] == "application/pdf"
+    assert f.headers["content-disposition"] == 'attachment; filename="1407SW001-2026-27.pdf"'
+    assert f.content.startswith(b"%PDF")
+    assert c.get("/api/v1/admin/quotations/999").status_code == 404
+
+    # List.
+    lst = c.get("/api/v1/admin/quotations?q=navapakam").json()
+    assert lst["total"] == 3 and lst["items"][0]["customer_name"] == "NAVAPAKAM KITCHENS LLP"
+    assert c.get("/api/v1/admin/quotations?q=nobody").json()["total"] == 0
+    assert c.get("/api/v1/admin/quotations?from=2027-01-01").json()["total"] == 1
+
+
+def test_manual_reference_is_kept_and_duplicates_are_409(client):
+    c, _, _ = client
+    r = c.post("/api/v1/admin/quotations", json=_draft(reference="14072920/2026-27"))
+    assert r.status_code == 201 and r.json()["reference"] == "14072920/2026-27"
+    dup = c.post("/api/v1/admin/quotations", json=_draft(reference="14072920/2026-27"))
+    assert dup.status_code == 409
+    assert "already used" in dup.json()["detail"]
+    # A manual reference does not consume an auto number.
+    assert c.get("/api/v1/admin/quotations/next-reference?date=2026-07-14").json()["next_number"] == 1
+    # ...and the auto allocator skips over a hand-typed value equal to its next one.
+    c.post("/api/v1/admin/quotations", json=_draft(reference="1407SW001/2026-27"))
+    auto = c.post("/api/v1/admin/quotations", json=_draft())
+    assert auto.status_code == 201 and auto.json()["reference"] == "1407SW002/2026-27"
+
+
+def test_storage_failure_inserts_nothing(client, monkeypatch):
+    c, Session, _ = client
+    from app.services import storage as storage_mod
+
+    class _Boom(storage_mod.LocalStorage):
+        def save_bytes(self, *a, **k):
+            raise RuntimeError("bucket down")
+
+    monkeypatch.setattr("app.services.storage.get_storage", lambda: _Boom())
+    with pytest.raises(RuntimeError):
+        c.post("/api/v1/admin/quotations", json=_draft())
+    from app.models.quotation import Quotation, QuotationSequence
+    with Session() as s:
+        assert s.query(Quotation).count() == 0
+        assert s.query(QuotationSequence).count() == 0  # the allocation rolled back too
+    assert c.get("/api/v1/admin/quotations/next-reference?date=2026-07-14").json()["next_number"] == 1
+
+
+def test_create_is_admin_only(client):
+    c, _, _ = client
+    from app.main import app
+    from app.services.auth import get_current_user
+
+    class _M:
+        id = 2
+        role = "MANAGER"
+        active = True
+
+    app.dependency_overrides[get_current_user] = lambda: _M()
+    assert c.post("/api/v1/admin/quotations", json=_draft()).status_code == 403
+    assert c.get("/api/v1/admin/quotations").status_code == 403
+    assert c.get("/api/v1/admin/quotations/next-reference").status_code == 403
+
+
+def test_presets(client):
+    c, _, _ = client
+    r = c.get("/api/v1/admin/quotations/presets")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["terms"]["POS"][0] == "Quotation validity for {days} Days"
+    assert body["notes"]["CCTV"]["style"] == "RED_TEXT"
+    assert body["totals_labels"]["SIMPLE"]["grand_total"] == "GRAND TOTAL"

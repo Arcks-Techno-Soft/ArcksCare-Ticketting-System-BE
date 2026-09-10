@@ -160,6 +160,9 @@ class QuotationItem(Base):
     include_image: Mapped[bool] = mapped_column(Boolean, default=False)
     # Resolved at issue time: row override, else the product's image.
     image_storage_key: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    # Bundled seed photo (file name under assets/quotation/products) — used by
+    # the seed catalogue until product images live in storage (Phase 4).
+    image_asset: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
 
     quotation: Mapped["Quotation"] = relationship(back_populates="items")
 
