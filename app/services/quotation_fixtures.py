@@ -43,6 +43,39 @@ SKC582_SPEC = "\n".join([
     "Colour : Dark Grey",
 ])
 
+# Seed catalogue (plan §3 / §4 Phase 4). Served read-only by GET /products
+# until the DB catalogue exists; the Navapakam fixture is built from it.
+SEED_PRODUCTS = [
+    {
+        "brand": "SK-POS®", "brand_sub_label": None, "model": "Mighty Series\nM95",
+        "name": "SK-POS M95 Touch POS System",
+        "headline": (
+            "Touch POS System with [[N95 Processor]] - [[8GB RAM]] with "
+            "[[128 GB M.2 NVMe SSD (Fastest Response)]] Capacitive Flat Touch "
+            "Screen with Water Proof and Dust Proof"
+        ),
+        "spec_lines": M95_SPEC, "warranty_label": "3 Years Onsite Warranty",
+        "default_unit_price": 38000, "default_row_style": "DETAILED",
+        "image_asset": "sk-pos-m95-touch-pos.png",
+    },
+    {
+        "brand": "STOUT®", "brand_sub_label": "by SK-POS®", "model": "S200E",
+        "name": "STOUT S200E Thermal Printer",
+        "headline": "High Speed Thermal Printer with multiple interface for Bill Printing/KOT",
+        "spec_lines": S200E_SPEC, "warranty_label": "1 Year Onsite Warranty",
+        "default_unit_price": 6800, "default_row_style": "DETAILED",
+        "image_asset": "stout-s200e-thermal-printer.png",
+    },
+    {
+        "brand": "SK-POS®", "brand_sub_label": None, "model": "SKC582",
+        "name": "SK-POS SKC582 Cash Drawer",
+        "headline": "Auto Openable Cash Drawer",
+        "spec_lines": SKC582_SPEC, "warranty_label": "1 Year Onsite Warranty",
+        "default_unit_price": 3800, "default_row_style": "DETAILED",
+        "image_asset": "sk-pos-skc582-cash-drawer.png",
+    },
+]
+
 NAVAPAKAM_DRAFT = {
     "quotation_date": "2026-07-14",
     "reference": "14072920/2026-27",

@@ -7,7 +7,7 @@ place totals are computed.
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
 from typing import List, Optional
@@ -248,11 +248,34 @@ class SignatoryOut(BaseModel):
     designation: str
     phones: str
     email: str
+    initials: str
+
+
+class NextReferenceOut(BaseModel):
+    reference: str
+    fy: str
+    next_number: int
+    date: date
+
+
+class QuotationProductOut(BaseModel):
+    """Catalogue entry. `id` is None for the bundled seed products served
+    before the DB catalogue exists (Phase 4)."""
+    id: Optional[int] = None
+    brand: Optional[str] = None
+    brand_sub_label: Optional[str] = None
+    model: Optional[str] = None
+    name: str
+    headline: str
+    spec_lines: Optional[str] = None
+    warranty_label: Optional[str] = None
+    default_unit_price: Optional[Decimal] = None
+    default_row_style: RowStyle = RowStyle.DETAILED
+    image_asset: Optional[str] = None
+    image_storage_key: Optional[str] = None
 
 
 class QuotationItemOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
     id: int
     position: int
     row_style: str
@@ -268,42 +291,61 @@ class QuotationItemOut(BaseModel):
     line_total: Decimal
     include_image: bool
     image_storage_key: Optional[str] = None
+    image_asset: Optional[str] = None
 
 
-class QuotationOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+class QuotationCreatedBy(BaseModel):
+    id: int
+    name: Optional[str] = None
+    username: Optional[str] = None
 
+
+class QuotationSummaryOut(BaseModel):
+    """List row."""
     id: int
     reference: str
     status: str
     quotation_date: date
     customer_name: str
-    address_lines: Optional[str] = None
+    subject_line: Optional[str] = None
+    grand_total: Decimal
+    created_by: Optional[QuotationCreatedBy] = None
+    created_at: Optional[datetime] = None
+
+
+class QuotationOut(QuotationSummaryOut):
+    address_lines: List[str] = []
     customer_gstin: Optional[str] = None
     customer_pan: Optional[str] = None
     contact_name: Optional[str] = None
     contact_phone: Optional[str] = None
     contact_email: Optional[str] = None
-    subject_line: Optional[str] = None
     validity_days: int
     gst_rate: Decimal
     totals_label_set: str
     note_text: Optional[str] = None
     note_style: str
     terms: List[str]
+    show_sl_no: Optional[bool] = None
+    signatory_id: Optional[int] = None
     signatory_name: str
     signatory_designation: Optional[str] = None
     signatory_phones: Optional[str] = None
     signatory_email: Optional[str] = None
     subtotal: Decimal
     gst_amount: Decimal
-    grand_total: Decimal
+    # Fresh viewable URL for the stored PDF (presigned on S3, static path locally).
     pdf_url: Optional[str] = None
     duplicated_from_id: Optional[int] = None
-    created_by_id: Optional[int] = None
-    created_at: Optional[str] = None
-    issued_at: Optional[str] = None
+    issued_at: Optional[datetime] = None
     items: List[QuotationItemOut] = []
+
+
+class QuotationListOut(BaseModel):
+    items: List[QuotationSummaryOut]
+    total: int
+    limit: int
+    offset: int
 
 
 # The Navapakam golden fixture doubles as the /docs example payload.
