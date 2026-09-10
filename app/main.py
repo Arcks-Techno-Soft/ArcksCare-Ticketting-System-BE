@@ -17,6 +17,7 @@ from .database import Base, SessionLocal, engine, ensure_schema_exists
 from .routers import admin as admin_router
 from .routers import auth as auth_router
 from .routers import installations as installations_router
+from .routers import quotations as quotations_router
 from .routers import sign as sign_router
 from .routers import tickets as tickets_router
 from .routers import warranties as warranties_router
@@ -43,6 +44,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Let the browser read the computed totals + filename on quotation previews.
+    expose_headers=["Content-Disposition", "X-Subtotal", "X-Gst", "X-Grand-Total"],
 )
 
 app.include_router(tickets_router.router)
@@ -51,6 +54,7 @@ app.include_router(admin_router.router)
 app.include_router(installations_router.router)
 app.include_router(warranties_router.router)
 app.include_router(sign_router.router)
+app.include_router(quotations_router.router)
 
 # Serve uploaded files at /uploads/<ticket_ref>/<filename>.
 # The directory is created lazily on first upload; ensure it exists for the mount.
@@ -75,6 +79,7 @@ def _bootstrap_db() -> None:
     from .models import warranty as _w  # noqa: F401
     from .models import sub_engineer as _se  # noqa: F401
     from .models import ticket_engineer as _te  # noqa: F401
+    from .models import quotation as _q  # noqa: F401
     from .services.auth import ensure_user_profile_columns, seed_initial_users
     from .services.sample_data import (
         seed_demo_tickets,
