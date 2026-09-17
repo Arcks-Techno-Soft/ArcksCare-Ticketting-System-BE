@@ -1,5 +1,6 @@
-"""Quotation endpoints (plan §6). Every route is Admin-level (Super Admin +
-Admin; legacy OWNER via tier inheritance in `require_role`).
+"""Quotation endpoints (plan §6). The quotation workflow is open to Managers
+and above (Super Admin + Admin + Manager; legacy OWNER via tier inheritance in
+`require_role`). Editing the product catalogue stays Admin-level.
 
 Phase 1: `POST /preview` (render only). Phase 2: signatories, next-reference,
 `POST /` (issue), `GET /{id}`, `GET /{id}/file`, a read-only seed catalogue
@@ -56,10 +57,13 @@ router = APIRouter(prefix="/api/v1/admin/quotations", tags=["quotations"])
 TOTALS_HEADERS = ("X-Subtotal", "X-Gst", "X-Grand-Total")
 
 AdminUser = Depends(require_role(UserRole.ADMIN))
+# The quotation workflow itself is open to Managers too; only the catalogue
+# *mutation* routes below stay Admin-level.
+QuotationUser = Depends(require_role(UserRole.ADMIN, UserRole.MANAGER))
 
 
 @router.get("/signatories", response_model=list[SignatoryOut], summary="People who can sign a quotation")
-def list_signatories(_user: User = AdminUser):
+def list_signatories(_user: User = QuotationUser):
     return [
         SignatoryOut(id=s.id, name=s.name, designation=s.designation, phones=s.phones,
                      email=s.email, initials=s.initials)
@@ -72,7 +76,7 @@ def next_reference(
     date_: Optional[date] = Query(None, alias="date"),
     signatory_id: int = Query(brand.DEFAULT_SIGNATORY_ID),
     db: Session = Depends(get_db),
-    _user: User = AdminUser,
+    _user: User = QuotationUser,
 ):
     sig = brand.get_signatory(signatory_id)
     if sig is None:
@@ -83,7 +87,7 @@ def next_reference(
 
 
 @router.get("/presets", summary="T&C / note / totals-label presets for the form")
-def presets(_user: User = AdminUser):
+def presets(_user: User = QuotationUser):
     """Server-defined presets so the form never carries its own copy. Terms
     line 1 has a `{days}` placeholder the form fills from validity days."""
     return {
@@ -103,7 +107,7 @@ def list_products(
     q: Optional[str] = Query(None, description="name / brand / model contains"),
     active: str = Query("true", pattern="^(true|false|all)$"),
     db: Session = Depends(get_db),
-    _user: User = AdminUser,
+    _user: User = QuotationUser,
 ):
     return [product_to_out(p) for p in catalogue.list_products(db, q=q, active=active)]
 
@@ -156,7 +160,7 @@ def delete_product(product_id: int, db: Session = Depends(get_db), _user: User =
 
 @router.post("/item-images", response_model=ItemImageOut, status_code=status.HTTP_201_CREATED,
              summary="Upload a one-off item picture")
-async def upload_item_image(image: UploadFile = File(...), _user: User = AdminUser):
+async def upload_item_image(image: UploadFile = File(...), _user: User = QuotationUser):
     data, ctype, ext = await catalogue.read_image_upload(image)
     key = catalogue.store_item_image(data, ctype, ext)
     return ItemImageOut(storage_key=key, url=catalogue.image_url_for(key, None) or "")
@@ -177,7 +181,7 @@ def preview_quotation(
     draft: QuotationDraft,
     format: str = Query("pdf", pattern="^(pdf|png)$"),
     db: Session = Depends(get_db),
-    _user: User = AdminUser,
+    _user: User = QuotationUser,
 ) -> Response:
     model = build_render_model(draft, db)
     try:
@@ -205,7 +209,7 @@ def preview_quotation(
 def create_quotation(
     draft: QuotationDraft,
     db: Session = Depends(get_db),
-    user: User = AdminUser,
+    user: User = QuotationUser,
 ):
     q = issue_quotation(db, draft, user)
     return quotation_to_out(q)
@@ -219,7 +223,7 @@ def list_quotations(
     limit: int = Query(25, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    _user: User = AdminUser,
+    _user: User = QuotationUser,
 ):
     query = db.query(Quotation)
     if q:
@@ -254,7 +258,7 @@ def _get_or_404(db: Session, quotation_id: int) -> Quotation:
 
 
 @router.get("/{quotation_id}", response_model=QuotationOut, summary="Quotation detail")
-def get_quotation(quotation_id: int, db: Session = Depends(get_db), _user: User = AdminUser):
+def get_quotation(quotation_id: int, db: Session = Depends(get_db), _user: User = QuotationUser):
     return quotation_to_out(_get_or_404(db, quotation_id))
 
 
@@ -263,7 +267,7 @@ def download_quotation_file(
     quotation_id: int,
     format: str = Query("pdf", pattern="^(pdf|docx|png|jpeg)$"),
     db: Session = Depends(get_db),
-    _user: User = AdminUser,
+    _user: User = QuotationUser,
 ):
     """PDF is the stored document of record. Word (an editable copy), PNG and
     JPEG are rendered on first request and cached back to storage."""
@@ -280,7 +284,7 @@ def download_quotation_file(
 
 
 @router.post("/{quotation_id}/duplicate", response_model=QuotationDraft, summary="Draft a copy of a quotation")
-def duplicate_quotation(quotation_id: int, db: Session = Depends(get_db), _user: User = AdminUser):
+def duplicate_quotation(quotation_id: int, db: Session = Depends(get_db), _user: User = QuotationUser):
     """Returns a draft to pre-fill the form: reference cleared (a new number
     is assigned on submit), date = today, every item copied, and
     `duplicated_from_id` set so the issued row records its origin."""
