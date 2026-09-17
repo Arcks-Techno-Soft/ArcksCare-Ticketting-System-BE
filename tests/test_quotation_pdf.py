@@ -121,16 +121,16 @@ def test_preview_png_format(client):
     assert r.content[:8] == b"\x89PNG\r\n\x1a\n"
 
 
-@pytest.mark.parametrize("role", ["MANAGER", "ENGINEER", "SALES"])
-def test_preview_is_admin_only(client, role):
+@pytest.mark.parametrize("role", ["ENGINEER", "SALES"])
+def test_preview_is_closed_below_manager(client, role):
     c, state = client
     state["role"] = role
     r = c.post("/api/v1/admin/quotations/preview", json=NAVAPAKAM_DRAFT)
     assert r.status_code == 403
 
 
-@pytest.mark.parametrize("role", ["SUPER_ADMIN", "OWNER"])
-def test_preview_allows_super_admin_and_legacy_owner(client, role):
+@pytest.mark.parametrize("role", ["SUPER_ADMIN", "OWNER", "MANAGER"])
+def test_preview_allows_super_admin_legacy_owner_and_manager(client, role):
     c, state = client
     state["role"] = role
     r = c.post("/api/v1/admin/quotations/preview", json=NAVAPAKAM_DRAFT)

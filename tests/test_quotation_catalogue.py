@@ -137,15 +137,20 @@ def test_issued_quotation_renders_after_product_is_retired(client):
     assert c.post(ROOT, json=dup).status_code == 201
 
 
-@pytest.mark.parametrize("method,path,kwargs", [
-    ("get", "/products", {}),
-    ("post", "/products", {"data": {"payload": "{}"}}),
-    ("patch", "/products/1", {"data": {"payload": "{}"}}),
-    ("delete", "/products/1", {}),
-    ("post", "/products/reorder", {"json": {"ids": [1]}}),
-    ("post", "/item-images", {"files": {"image": ("a.png", b"x", "image/png")}}),
+# Editing the catalogue is Admin-level; *using* it (reading products, attaching
+# a one-off item picture) rides along with the quotation workflow, so a Manager
+# gets through. `admin_only` says which side of that split each route is on.
+@pytest.mark.parametrize("method,path,kwargs,admin_only", [
+    ("get", "/products", {}, False),
+    ("post", "/products", {"data": {"payload": "{}"}}, True),
+    ("patch", "/products/1", {"data": {"payload": "{}"}}, True),
+    ("delete", "/products/1", {}, True),
+    ("post", "/products/reorder", {"json": {"ids": [1]}}, True),
+    ("post", "/item-images", {"files": {"image": ("a.png", b"x", "image/png")}}, False),
 ])
-def test_catalogue_routes_are_admin_only(client, method, path, kwargs):
+def test_catalogue_mutation_is_admin_only_but_reads_allow_managers(
+    client, method, path, kwargs, admin_only
+):
     c, _, _ = client
     from app.main import app
     from app.services.auth import get_current_user
@@ -156,4 +161,10 @@ def test_catalogue_routes_are_admin_only(client, method, path, kwargs):
         active = True
 
     app.dependency_overrides[get_current_user] = lambda: _M()
-    assert getattr(c, method)(f"{ROOT}{path}", **kwargs).status_code == 403
+    status = getattr(c, method)(f"{ROOT}{path}", **kwargs).status_code
+    if admin_only:
+        assert status == 403
+    else:
+        # Not asserting the exact success code — b"x" isn't a real PNG, so the
+        # upload may still be rejected on content. The point is it isn't 403.
+        assert status != 403

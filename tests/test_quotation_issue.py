@@ -176,17 +176,19 @@ def test_storage_failure_inserts_nothing(client, monkeypatch):
     assert c.get("/api/v1/admin/quotations/next-reference?date=2026-07-14").json()["next_number"] == 1
 
 
-def test_create_is_admin_only(client):
+@pytest.mark.parametrize("role", ["ENGINEER", "SALES"])
+def test_quotations_are_closed_below_manager(client, role):
+    """Managers were let in when the gate was split; Engineers and Sales weren't."""
     c, _, _ = client
     from app.main import app
     from app.services.auth import get_current_user
 
-    class _M:
+    class _U2:
         id = 2
-        role = "MANAGER"
         active = True
 
-    app.dependency_overrides[get_current_user] = lambda: _M()
+    _U2.role = role
+    app.dependency_overrides[get_current_user] = lambda: _U2()
     assert c.post("/api/v1/admin/quotations", json=_draft()).status_code == 403
     assert c.get("/api/v1/admin/quotations").status_code == 403
     assert c.get("/api/v1/admin/quotations/next-reference").status_code == 403
@@ -298,7 +300,9 @@ def test_duplicate_returns_a_valid_draft_that_reissues(client):
     assert c.post("/api/v1/admin/quotations/999/duplicate").status_code == 404
 
 
-def test_phase3_routes_are_admin_only(client):
+def test_managers_can_use_the_quotation_workflow(client):
+    """Managers were admin-only until the gate was split: they now get the whole
+    quotation workflow (issue / read / download / duplicate)."""
     c, _, _ = client
     q = _issue(c)
     from app.main import app
@@ -310,5 +314,10 @@ def test_phase3_routes_are_admin_only(client):
         active = True
 
     app.dependency_overrides[get_current_user] = lambda: _M()
-    assert c.get(f"/api/v1/admin/quotations/{q['id']}/file?format=docx").status_code == 403
-    assert c.post(f"/api/v1/admin/quotations/{q['id']}/duplicate").status_code == 403
+    assert c.get(f"/api/v1/admin/quotations/{q['id']}/file?format=docx").status_code == 200
+    assert c.post(f"/api/v1/admin/quotations/{q['id']}/duplicate").status_code == 200
+    assert c.post("/api/v1/admin/quotations", json=_draft()).status_code == 201
+    assert c.get("/api/v1/admin/quotations").status_code == 200
+    assert c.get(f"/api/v1/admin/quotations/{q['id']}").status_code == 200
+    assert c.get("/api/v1/admin/quotations/products").status_code == 200
+    assert c.get("/api/v1/admin/quotations/next-reference").status_code == 200
