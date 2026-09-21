@@ -385,18 +385,28 @@ def _require_super_admin(actor: User, action: str) -> None:
 
     Force-close was reserved here too until 2026-09-04. It is Admin-level now so
     an Admin can clear the RESOLVED backlog without escalating; see
-    _require_admin_level. Soft-delete stays Super-Admin-only.
+    _require_manager_level. Soft-delete stays Super-Admin-only.
     """
     if actor.role not in SUPER_ADMIN_ROLES:
         raise HTTPException(status_code=403, detail=f"Only a Super Admin can {action}")
 
 
 def _require_admin_level(actor: User, action: str) -> None:
-    """Admin-level override actions (force-close). ADMIN, SUPER_ADMIN and the
-    legacy OWNER alias all qualify; Manager and below never do."""
+    """Admin-level override actions. ADMIN, SUPER_ADMIN and the legacy OWNER
+    alias all qualify; Manager and below never do."""
     if actor.role not in ADMIN_ROLES:
         raise HTTPException(
             status_code=403, detail=f"Only an Admin or Super Admin can {action}"
+        )
+
+
+def _require_manager_level(actor: User, action: str) -> None:
+    """Closing a ticket. Manager-level since 2026-09-21 — managers run the
+    day-to-day queue, and leaving them unable to close it meant every stuck
+    ticket waited on an Admin. Soft-delete stays Super-Admin-only."""
+    if actor.role not in ADMIN_MANAGER_ROLES:
+        raise HTTPException(
+            status_code=403, detail=f"Only a Manager, Admin or Super Admin can {action}"
         )
 
 
@@ -500,9 +510,9 @@ def compute_close_pending(ticket: Ticket) -> list[str]:
 
 
 def force_close(db: Session, ticket: Ticket, actor: User, reason: str) -> Ticket:
-    """Admin/Owner override: move a ticket to CLOSED from ANY status, skipping
-    signatures/PDF. A reason is required and recorded for audit."""
-    _require_admin_level(actor, "close a ticket")
+    """Manager/Admin/Owner override: move a ticket to CLOSED from ANY status,
+    skipping signatures/PDF. A reason is required and recorded for audit."""
+    _require_manager_level(actor, "close a ticket")
     reason = (reason or "").strip()
     if not reason:
         raise HTTPException(status_code=400, detail="A reason is required to close the ticket.")
