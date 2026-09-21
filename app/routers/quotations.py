@@ -1,6 +1,6 @@
-"""Quotation endpoints (plan §6). The quotation workflow is open to Managers
-and above (Super Admin + Admin + Manager; legacy OWNER via tier inheritance in
-`require_role`). Editing the product catalogue stays Admin-level.
+"""Quotation endpoints (plan §6). Every route is open to Managers and above
+(Super Admin + Admin + Manager; legacy OWNER via tier inheritance in
+`require_role`) — the quotation workflow and the product catalogue alike.
 
 Phase 1: `POST /preview` (render only). Phase 2: signatories, next-reference,
 `POST /` (issue), `GET /{id}`, `GET /{id}/file`, a read-only seed catalogue
@@ -46,6 +46,7 @@ from ..services.quotation_service import (
     quotation_summary,
     quotation_to_draft,
     quotation_to_out,
+    update_quotation,
 )
 
 logger = logging.getLogger("skposcare.quotation")
@@ -56,9 +57,8 @@ router = APIRouter(prefix="/api/v1/admin/quotations", tags=["quotations"])
 # middleware's expose_headers in main.py).
 TOTALS_HEADERS = ("X-Subtotal", "X-Gst", "X-Grand-Total")
 
-AdminUser = Depends(require_role(UserRole.ADMIN))
-# The quotation workflow itself is open to Managers too; only the catalogue
-# *mutation* routes below stay Admin-level.
+# Quotation management — the workflow and the product catalogue alike — is
+# open to Managers and above.
 QuotationUser = Depends(require_role(UserRole.ADMIN, UserRole.MANAGER))
 
 
@@ -125,7 +125,7 @@ async def create_product(
     payload: str = Form(..., description="QuotationProductIn as JSON"),
     image: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
-    user: User = AdminUser,
+    user: User = QuotationUser,
 ):
     body = _parse_payload(payload, QuotationProductIn)
     img = await catalogue.read_image_upload(image) if image is not None and image.filename else None
@@ -133,7 +133,7 @@ async def create_product(
 
 
 @router.post("/products/reorder", response_model=list[QuotationProductOut], summary="Set sort order")
-def reorder_products(body: ReorderProductsIn, db: Session = Depends(get_db), _user: User = AdminUser):
+def reorder_products(body: ReorderProductsIn, db: Session = Depends(get_db), _user: User = QuotationUser):
     return [product_to_out(p) for p in catalogue.reorder_products(db, body.ids)]
 
 
@@ -144,7 +144,7 @@ async def update_product(
     payload: str = Form("{}"),
     image: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
-    _user: User = AdminUser,
+    _user: User = QuotationUser,
 ):
     p = catalogue.get_product_or_404(db, product_id)
     body = _parse_payload(payload, QuotationProductPatch)
@@ -153,7 +153,7 @@ async def update_product(
 
 
 @router.delete("/products/{product_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Retire a product (soft delete)")
-def delete_product(product_id: int, db: Session = Depends(get_db), _user: User = AdminUser):
+def delete_product(product_id: int, db: Session = Depends(get_db), _user: User = QuotationUser):
     catalogue.retire_product(db, catalogue.get_product_or_404(db, product_id))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -281,6 +281,29 @@ def download_quotation_file(
             "Access-Control-Expose-Headers": "Content-Disposition",
         },
     )
+
+
+@router.get("/{quotation_id}/draft", response_model=QuotationDraft,
+            summary="The quotation as an editable draft")
+def quotation_draft(quotation_id: int, db: Session = Depends(get_db), _user: User = QuotationUser):
+    """Pre-fills the form for an edit. Unlike /duplicate this keeps the
+    reference and the original date — the same quotation, not a copy."""
+    return quotation_to_draft(_get_or_404(db, quotation_id))
+
+
+@router.put("/{quotation_id}", response_model=QuotationOut, summary="Edit an issued quotation")
+def edit_quotation(
+    quotation_id: int,
+    draft: QuotationDraft,
+    db: Session = Depends(get_db),
+    user: User = QuotationUser,
+):
+    """Correct a quotation in place. The reference is kept whatever the draft
+    says — it identifies the document the customer already holds — and the
+    stored PDF is re-rendered so the download always matches the saved data.
+    """
+    q = update_quotation(db, _get_or_404(db, quotation_id), draft, user)
+    return quotation_to_out(q)
 
 
 @router.post("/{quotation_id}/duplicate", response_model=QuotationDraft, summary="Draft a copy of a quotation")

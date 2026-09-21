@@ -50,6 +50,26 @@ def ensure_quotation_item_columns(engine: Engine) -> None:
         logger.info("Added quotation_items.image_asset column")
 
 
+
+def ensure_quotation_edit_columns(engine: Engine) -> None:
+    """Add quotations.updated_at / updated_by_id if the table pre-dates edits.
+
+    Same shape as the other ensure_* migrations: scoped to DB_SCHEMA so a test
+    backend can't touch production, and a no-op once the columns exist.
+    """
+    insp = inspect(engine)
+    if "quotations" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # fresh DB — create_all includes them
+    existing = {c["name"] for c in insp.get_columns("quotations", schema=MIGRATION_SCHEMA)}
+    stamp = "TIMESTAMPTZ" if engine.dialect.name == "postgresql" else "TIMESTAMP"
+    pending = [("updated_at", f"{stamp} NULL"), ("updated_by_id", "INTEGER NULL")]
+    with engine.begin() as conn:
+        for name, ddl in pending:
+            if name in existing:
+                continue
+            conn.execute(text(f"ALTER TABLE {qualify('quotations')} ADD COLUMN {name} {ddl}"))
+            logger.info("Added quotations.%s column", name)
+
 # ----------------------------- image resolution -------------------------- #
 
 def read_storage_bytes(storage_key: str) -> Optional[bytes]:
@@ -286,6 +306,97 @@ def issue_quotation(db: Session, draft: QuotationDraft, user: User) -> Quotation
     return q
 
 
+
+def update_quotation(db: Session, q: Quotation, draft: QuotationDraft, user: User) -> Quotation:
+    """Correct an issued quotation in place and re-render its document.
+
+    The reference is the quotation's identity — the customer already has it —
+    so it is never reallocated here, whatever the draft carries. Everything
+    else, the date and signatory included, is replaced from the draft.
+
+    The stored PDF is overwritten (same storage key), and the lazily-cached
+    docx/png/jpeg keys are cleared so the next download re-renders from the
+    corrected data instead of serving the superseded document.
+    """
+    from .storage import get_storage
+
+    signatory = brand.get_signatory(draft.signatory_id) or brand.SIGNATORIES[0]
+
+    from .quotation_catalogue import product_image_source
+
+    items = []
+    for item in draft.items:
+        if item.include_image and item.product_id is not None and not item.has_image_source:
+            key, asset = product_image_source(db, item.product_id)
+            item = item.model_copy(update={"image_storage_key": key, "image_asset": asset})
+        items.append(item)
+    final = draft.model_copy(update={"reference": q.reference, "items": items})
+    model = build_render_model(final, db)
+    pdf = render_quotation_pdf(model)
+
+    q.quotation_date = final.quotation_date
+    q.customer_name = final.customer_name
+    q.address_lines = "\n".join(final.address_lines) or None
+    q.customer_gstin = final.customer_gstin
+    q.customer_pan = final.customer_pan
+    q.contact_name = final.contact_name
+    q.contact_phone = final.contact_phone
+    q.contact_email = final.contact_email
+    q.subject_line = final.subject_line
+    q.validity_days = final.validity_days
+    q.gst_rate = final.gst_rate
+    q.totals_label_set = final.totals_label_set.value
+    q.note_text = final.note_text
+    q.note_style = final.note_style.value
+    q.terms = list(final.terms or [])
+    q.show_sl_no = final.show_sl_no
+    q.signatory_id = signatory.id
+    q.signatory_name = signatory.name
+    q.signatory_designation = signatory.designation
+    q.signatory_phones = signatory.phones
+    q.signatory_email = signatory.email
+    q.subtotal = model.totals.subtotal
+    q.gst_amount = model.totals.gst_amount
+    q.grand_total = model.totals.grand_total
+    q.updated_at = datetime.now(timezone.utc)
+    q.updated_by_id = user.id
+
+    # delete-orphan on the relationship removes the previous rows.
+    q.items.clear()
+    db.flush()
+    for pos, (item, lt) in enumerate(zip(final.items, model.totals.line_totals), start=1):
+        q.items.append(QuotationItem(
+            position=pos,
+            row_style=item.row_style.value,
+            product_id=item.product_id,
+            brand=item.brand,
+            brand_sub_label=item.brand_sub_label,
+            model=item.model,
+            headline=item.headline,
+            spec_lines=item.spec_lines,
+            warranty_label=item.warranty_label,
+            unit_price=item.unit_price,
+            quantity=item.quantity,
+            line_total=lt,
+            include_image=bool(item.include_image and item.has_image_source),
+            image_storage_key=item.image_storage_key,
+            image_asset=item.image_asset,
+        ))
+
+    storage = get_storage()
+    prefix = storage_prefix(q.reference)
+    stored = storage.save_bytes(pdf, "application/pdf", prefix, reference_filename(q.reference))
+    q.pdf_storage_key = stored["storage_url"]
+    # Superseded renders — regenerated on the next download of each format.
+    q.docx_storage_key = None
+    q.png_storage_key = None
+    q.jpeg_storage_key = None
+
+    db.commit()
+    db.refresh(q)
+    logger.info("Quotation %s edited by %s", q.reference, user.username)
+    return q
+
 def _existing_quotation_id(db: Session, quotation_id: Optional[int]) -> Optional[int]:
     if quotation_id is None:
         return None
@@ -395,11 +506,14 @@ def pdf_url_for(q: Quotation) -> Optional[str]:
     return url
 
 
-def _created_by(q: Quotation) -> Optional[dict]:
-    u = q.created_by
+def _user_ref(u) -> Optional[dict]:
     if u is None:
         return None
     return {"id": u.id, "name": getattr(u, "name", None), "username": u.username}
+
+
+def _created_by(q: Quotation) -> Optional[dict]:
+    return _user_ref(q.created_by)
 
 
 def quotation_summary(q: Quotation) -> QuotationSummaryOut:
@@ -407,6 +521,7 @@ def quotation_summary(q: Quotation) -> QuotationSummaryOut:
         id=q.id, reference=q.reference, status=q.status, quotation_date=q.quotation_date,
         customer_name=q.customer_name, subject_line=q.subject_line, grand_total=q.grand_total,
         created_by=_created_by(q), created_at=q.created_at,
+        updated_by=_user_ref(q.updated_by), updated_at=q.updated_at,
     )
 
 

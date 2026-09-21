@@ -59,6 +59,7 @@ def client(tmp_path, monkeypatch):
         id = 1
         role = "ADMIN"
         active = True
+        username = "admin-test"
 
     app.dependency_overrides[get_db] = _db
     app.dependency_overrides[get_current_user] = lambda: _U()
@@ -186,6 +187,7 @@ def test_quotations_are_closed_below_manager(client, role):
     class _U2:
         id = 2
         active = True
+        username = "other-test"
 
     _U2.role = role
     app.dependency_overrides[get_current_user] = lambda: _U2()
@@ -312,6 +314,7 @@ def test_managers_can_use_the_quotation_workflow(client):
         id = 2
         role = "MANAGER"
         active = True
+        username = "manager-test"
 
     app.dependency_overrides[get_current_user] = lambda: _M()
     assert c.get(f"/api/v1/admin/quotations/{q['id']}/file?format=docx").status_code == 200
@@ -321,3 +324,81 @@ def test_managers_can_use_the_quotation_workflow(client):
     assert c.get(f"/api/v1/admin/quotations/{q['id']}").status_code == 200
     assert c.get("/api/v1/admin/quotations/products").status_code == 200
     assert c.get("/api/v1/admin/quotations/next-reference").status_code == 200
+
+
+def test_edit_keeps_the_reference_and_rerenders(client):
+    """An edit corrects the row in place: same id, same reference, new totals,
+    and the superseded alternate renders are dropped so they regenerate."""
+    c, Session, _ = client
+    q = _issue(c)
+    # Cache a docx so we can prove the edit invalidates it.
+    assert c.get(f"/api/v1/admin/quotations/{q['id']}/file?format=docx").status_code == 200
+
+    from app.models.quotation import Quotation
+    with Session() as db:
+        before = db.get(Quotation, q["id"])
+        assert before.docx_storage_key is not None
+        assert before.updated_at is None
+
+    draft = c.get(f"/api/v1/admin/quotations/{q['id']}/draft").json()
+    assert draft["reference"] == q["reference"]  # not cleared, unlike duplicate
+    draft["customer_name"] = "Edited Customer Pvt Ltd"
+    draft["items"][0]["quantity"] = "4"
+
+    r = c.put(f"/api/v1/admin/quotations/{q['id']}", json=draft)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["id"] == q["id"]
+    assert body["reference"] == q["reference"]
+    assert body["customer_name"] == "Edited Customer Pvt Ltd"
+    assert body["grand_total"] != q["grand_total"]
+    assert body["updated_at"] is not None
+
+    with Session() as db:
+        after = db.get(Quotation, q["id"])
+        assert after.docx_storage_key is None  # superseded render dropped
+        assert after.png_storage_key is None
+        assert after.pdf_storage_key is not None
+        assert [i.quantity for i in after.items][0] == 4
+        # Items are replaced, not appended to.
+        assert len(after.items) == len(draft["items"])
+
+
+def test_edit_ignores_a_reference_change(client):
+    """The reference identifies the document the customer already holds, so a
+    draft carrying a different one must not move it."""
+    c, _, _ = client
+    q = _issue(c)
+    draft = c.get(f"/api/v1/admin/quotations/{q['id']}/draft").json()
+    draft["reference"] = "9999ZZ999/2099-00"
+    r = c.put(f"/api/v1/admin/quotations/{q['id']}", json=draft)
+    assert r.status_code == 200, r.text
+    assert r.json()["reference"] == q["reference"]
+
+
+def test_edit_404s_for_an_unknown_quotation(client):
+    c, _, _ = client
+    q = _issue(c)
+    draft = c.get(f"/api/v1/admin/quotations/{q['id']}/draft").json()
+    assert c.put("/api/v1/admin/quotations/9999", json=draft).status_code == 404
+    assert c.get("/api/v1/admin/quotations/9999/draft").status_code == 404
+
+
+def test_managers_can_edit_and_manage_the_catalogue(client):
+    """Quotation management is Manager-level now, catalogue included."""
+    c, _, _ = client
+    q = _issue(c)
+    from app.main import app
+    from app.services.auth import get_current_user
+
+    class _M:
+        id = 2
+        role = "MANAGER"
+        active = True
+        username = "manager-test"
+
+    app.dependency_overrides[get_current_user] = lambda: _M()
+    draft = c.get(f"/api/v1/admin/quotations/{q['id']}/draft").json()
+    assert c.put(f"/api/v1/admin/quotations/{q['id']}", json=draft).status_code == 200
+    assert c.post("/api/v1/admin/quotations/products",
+                  data={"payload": '{"name": "M", "headline": "H"}'}).status_code == 201
