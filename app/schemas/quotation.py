@@ -374,6 +374,10 @@ class QuotationSummaryOut(BaseModel):
     grand_total: Decimal
     created_by: Optional[QuotationCreatedBy] = None
     created_at: Optional[datetime] = None
+    # Set once the quotation has been corrected in place; None means it still
+    # reads exactly as first issued.
+    updated_by: Optional[QuotationCreatedBy] = None
+    updated_at: Optional[datetime] = None
 
 
 class QuotationOut(QuotationSummaryOut):

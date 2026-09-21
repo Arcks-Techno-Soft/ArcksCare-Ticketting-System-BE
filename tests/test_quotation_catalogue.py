@@ -137,20 +137,17 @@ def test_issued_quotation_renders_after_product_is_retired(client):
     assert c.post(ROOT, json=dup).status_code == 201
 
 
-# Editing the catalogue is Admin-level; *using* it (reading products, attaching
-# a one-off item picture) rides along with the quotation workflow, so a Manager
-# gets through. `admin_only` says which side of that split each route is on.
-@pytest.mark.parametrize("method,path,kwargs,admin_only", [
-    ("get", "/products", {}, False),
-    ("post", "/products", {"data": {"payload": "{}"}}, True),
-    ("patch", "/products/1", {"data": {"payload": "{}"}}, True),
-    ("delete", "/products/1", {}, True),
-    ("post", "/products/reorder", {"json": {"ids": [1]}}, True),
-    ("post", "/item-images", {"files": {"image": ("a.png", b"x", "image/png")}}, False),
+# Quotation management is Manager-level throughout — the catalogue included.
+# Engineers and Sales stay out entirely.
+@pytest.mark.parametrize("method,path,kwargs", [
+    ("get", "/products", {}),
+    ("post", "/products", {"data": {"payload": '{"name": "M", "headline": "H"}'}}),
+    ("patch", "/products/1", {"data": {"payload": "{}"}}),
+    ("delete", "/products/1", {}),
+    ("post", "/products/reorder", {"json": {"ids": [1]}}),
+    ("post", "/item-images", {"files": {"image": ("a.png", b"x", "image/png")}}),
 ])
-def test_catalogue_mutation_is_admin_only_but_reads_allow_managers(
-    client, method, path, kwargs, admin_only
-):
+def test_catalogue_is_open_to_managers(client, method, path, kwargs):
     c, _, _ = client
     from app.main import app
     from app.services.auth import get_current_user
@@ -159,12 +156,26 @@ def test_catalogue_mutation_is_admin_only_but_reads_allow_managers(
         id = 2
         role = "MANAGER"
         active = True
+        username = "manager-test"
 
     app.dependency_overrides[get_current_user] = lambda: _M()
-    status = getattr(c, method)(f"{ROOT}{path}", **kwargs).status_code
-    if admin_only:
-        assert status == 403
-    else:
-        # Not asserting the exact success code — b"x" isn't a real PNG, so the
-        # upload may still be rejected on content. The point is it isn't 403.
-        assert status != 403
+    # Not asserting an exact success code — b"x" isn't a real PNG and product 1
+    # may not exist. The point is that the role gate isn't what stops them.
+    assert getattr(c, method)(f"{ROOT}{path}", **kwargs).status_code != 403
+
+
+@pytest.mark.parametrize("role", ["ENGINEER", "SALES"])
+def test_catalogue_is_closed_below_manager(client, role):
+    c, _, _ = client
+    from app.main import app
+    from app.services.auth import get_current_user
+
+    class _U2:
+        id = 3
+        active = True
+        username = "other-test"
+
+    _U2.role = role
+    app.dependency_overrides[get_current_user] = lambda: _U2()
+    assert c.get(f"{ROOT}/products").status_code == 403
+    assert c.post(f"{ROOT}/products", data={"payload": "{}"}).status_code == 403

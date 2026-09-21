@@ -158,8 +158,12 @@ def _bootstrap_db() -> None:
     ensure_installation_note_attempt_column(engine)
     # Warranty invoice-number column on any pre-existing warranties table.
     warranties_router.ensure_warranty_invoice_number_column(engine)
-    from .services.quotation_service import ensure_quotation_item_columns
+    from .services.quotation_service import (
+        ensure_quotation_edit_columns,
+        ensure_quotation_item_columns,
+    )
     ensure_quotation_item_columns(engine)
+    ensure_quotation_edit_columns(engine)
     from .services.quotation_catalogue import ensure_quotation_product_columns
     ensure_quotation_product_columns(engine)
     # Provenance columns used by the historical Zoho warranty import.

@@ -1,12 +1,15 @@
 """Quotation tables (plan §5.1).
 
   quotation_products   — the catalogue (upload a product once, reuse forever)
-  quotations           — one issued, immutable quotation (header + totals + PDF)
+  quotations           — one issued quotation (header + totals + PDF). Editable
+                         in place: the reference is fixed, everything else can
+                         be corrected and the document re-rendered.
   quotation_items      — its printed rows, in order
   quotation_sequences  — per-financial-year running number for auto references
 
 All new tables → created by `Base.metadata.create_all` on boot once this
-module is imported in `main._bootstrap_db`. No column ALTERs needed for v1.
+module is imported in `main._bootstrap_db`. The edit columns arrived later,
+so they get an idempotent ALTER (`ensure_quotation_edit_columns`).
 """
 from __future__ import annotations
 
@@ -125,6 +128,14 @@ class Quotation(Base):
     issued_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Set when an issued quotation is corrected in place (reference kept, the
+    # document re-rendered). NULL means it still reads exactly as issued.
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_by_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
 
     items: Mapped[List["QuotationItem"]] = relationship(
         back_populates="quotation",
@@ -133,6 +144,9 @@ class Quotation(Base):
     )
     created_by: Mapped[Optional["User"]] = relationship(
         foreign_keys=[created_by_id], lazy="joined"
+    )
+    updated_by: Mapped[Optional["User"]] = relationship(
+        foreign_keys=[updated_by_id], lazy="joined"
     )
 
 
