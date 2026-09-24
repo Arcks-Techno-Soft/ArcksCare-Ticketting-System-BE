@@ -350,6 +350,20 @@ class SpareCatalogItem(BaseModel):
     product_category: str
     name: str
     default_price_inr: int
+    active: bool = True
+
+
+class CreateSpareCatalogRequest(BaseModel):
+    product_category: str = Field(min_length=2, max_length=80)
+    name: str = Field(min_length=1, max_length=160)
+    # GST-inclusive whole rupees.
+    default_price_inr: int = Field(default=0, ge=0, le=10_000_000)
+
+
+class UpdateSpareCatalogRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    default_price_inr: Optional[int] = Field(default=None, ge=0, le=10_000_000)
+    active: Optional[bool] = None
 
 
 class TicketSpareOut(BaseModel):

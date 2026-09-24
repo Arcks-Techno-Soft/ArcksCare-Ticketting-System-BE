@@ -99,6 +99,7 @@ def _bootstrap_db() -> None:
         ensure_service_fee_column,
         ensure_service_type_column,
         ensure_third_party_columns,
+        retire_placeholder_spares,
         seed_spare_catalog,
     )
     from .services.sub_engineers import ensure_sub_engineer_fee_column
@@ -186,6 +187,7 @@ def _bootstrap_db() -> None:
         from .services.quotation_catalogue import seed_quotation_products
         seed_quotation_products(db)
         seed_spare_catalog(db)
+        retire_placeholder_spares(db)
         # Fake/demo tickets are dev fixtures only. They are additive and
         # re-create themselves even after deletion, so they must never run
         # against a production database.

@@ -46,6 +46,8 @@ from ..schemas.auth import (
     ResumeRequest,
     ResolveRequest,
     SpareCatalogItem,
+    CreateSpareCatalogRequest,
+    UpdateSpareCatalogRequest,
     SubEngineerOut,
     SubEngineerRosterOut,
     TicketEventOut,
@@ -96,7 +98,7 @@ from ..services.signing import (
     record_customer_signature_via_engineer,
     record_engineer_signature,
 )
-from ..services.spares import compute_charges, oow_min_service_fee_inr
+from ..services.spares import ACCESSORIES_CATEGORY, compute_charges, oow_min_service_fee_inr
 from ..services.storage import get_storage
 from ..services.warranty_check import check_ticket_warranty
 from ..services.ticket_workflow import (
@@ -1960,14 +1962,84 @@ def _can_manage_charges(ticket: Ticket, user: User) -> bool:
 @router.get("/spare-catalog", response_model=List[SpareCatalogItem])
 def list_spare_catalog(
     product: Optional[str] = Query(default=None, description="Filter by product category"),
+    include_inactive: bool = Query(default=False, description="Also return retired parts (Settings page)"),
     db: Session = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
-    """Available spare parts. Optionally filter by product category."""
-    q = db.query(SpareCatalog).filter(SpareCatalog.active.is_(True))
+    """Available spare parts. With `product`, returns that product's parts
+    followed by the shared Accessories (offered on every product)."""
+    q = db.query(SpareCatalog)
+    if not include_inactive:
+        q = q.filter(SpareCatalog.active.is_(True))
     if product:
-        q = q.filter(SpareCatalog.product_category == product)
+        q = q.filter(SpareCatalog.product_category.in_([product, ACCESSORIES_CATEGORY]))
+        return q.order_by(
+            (SpareCatalog.product_category == ACCESSORIES_CATEGORY),
+            SpareCatalog.name,
+        ).all()
     return q.order_by(SpareCatalog.product_category, SpareCatalog.name).all()
+
+
+def _spare_catalog_or_404(db: Session, item_id: int) -> SpareCatalog:
+    item = db.query(SpareCatalog).filter(SpareCatalog.id == item_id).one_or_none()
+    if item is None:
+        raise HTTPException(status_code=404, detail="Spare catalog item not found")
+    return item
+
+
+def _ensure_unique_spare(db: Session, product_category: str, name: str, exclude_id: Optional[int] = None) -> None:
+    q = db.query(SpareCatalog).filter(
+        SpareCatalog.product_category == product_category,
+        func.lower(SpareCatalog.name) == name.lower(),
+    )
+    if exclude_id is not None:
+        q = q.filter(SpareCatalog.id != exclude_id)
+    if q.first() is not None:
+        raise HTTPException(status_code=409, detail=f"'{name}' already exists under {product_category}")
+
+
+@router.post("/spare-catalog", response_model=SpareCatalogItem, status_code=201)
+def create_spare_catalog_item(
+    body: CreateSpareCatalogRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Add a part to the catalog (Admin-level). Price is GST-inclusive."""
+    product = body.product_category.strip()
+    name = body.name.strip()
+    _ensure_unique_spare(db, product, name)
+    item = SpareCatalog(product_category=product, name=name, default_price_inr=body.default_price_inr)
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    logger.info("Spare catalog: %s added '%s' (%s) at %d", user.username, name, product, item.default_price_inr)
+    return item
+
+
+@router.patch("/spare-catalog/{item_id}", response_model=SpareCatalogItem)
+def update_spare_catalog_item(
+    item_id: int,
+    body: UpdateSpareCatalogRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Rename, reprice, retire or restore a catalog part (Admin-level). Only
+    the default for FUTURE tickets changes — spares already on a ticket keep
+    the price they were added at."""
+    item = _spare_catalog_or_404(db, item_id)
+    if body.name is not None:
+        name = body.name.strip()
+        _ensure_unique_spare(db, item.product_category, name, exclude_id=item.id)
+        item.name = name
+    if body.default_price_inr is not None:
+        item.default_price_inr = body.default_price_inr
+    if body.active is not None:
+        item.active = body.active
+    db.commit()
+    db.refresh(item)
+    logger.info("Spare catalog: %s updated #%d '%s' -> %d (active=%s)",
+                user.username, item.id, item.name, item.default_price_inr, item.active)
+    return item
 
 
 @router.get("/tickets/{reference}/charges", response_model=ChargesSummary)
