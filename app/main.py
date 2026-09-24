@@ -98,6 +98,7 @@ def _bootstrap_db() -> None:
         ensure_payment_columns,
         ensure_service_fee_column,
         ensure_service_type_column,
+        ensure_spare_seed_key_column,
         ensure_third_party_columns,
         retire_placeholder_spares,
         seed_spare_catalog,
@@ -133,6 +134,7 @@ def _bootstrap_db() -> None:
     # Run column migrations first so the freshly-mapped ORM matches the DB.
     ensure_service_fee_column(engine)
     ensure_service_type_column(engine)
+    ensure_spare_seed_key_column(engine)
     ensure_payment_columns(engine)
     ensure_payment_verification_columns(engine)
     ensure_third_party_columns(engine)

@@ -64,7 +64,7 @@ DEFAULT_CATALOG: List[Tuple[str, str, int]] = [
     ("Printer", "Printer Motherboard", 3776),
     ("Printer", "Printer Head", 3363),
     ("Printer", "Printer Cutter", 3363),
-    ("Printer", "Printer Blid", 0),
+    ("Printer", "Printer Blade", 0),
     ("Printer", "Printer Adaptor (24V)", 3776),
     # Kiosk
     ("Kiosk", "ViewSonic Touch Monitor", 0),
@@ -135,6 +135,14 @@ DEFAULT_CATALOG: List[Tuple[str, str, int]] = [
     ("CCTV", "Mount bracket", 200),
 ]
 
+# One-off corrections to parts already seeded under a wrong name:
+# (product_category, old name) -> new name. Applied on startup only while the
+# row still has the old name and before seeding, so the corrected entry above
+# claims the existing row instead of being inserted alongside it.
+SEED_RENAMES: Dict[Tuple[str, str], str] = {
+    ("Printer", "Printer Blid"): "Printer Blade",
+}
+
 # Launch-time placeholder parts that the ops team's real list replaced. Retired
 # (active=False, never deleted — past tickets' spare rows keep their snapshot)
 # on startup, but only while the row still carries its placeholder price, so a
@@ -158,22 +166,57 @@ RETIRED_PLACEHOLDERS: List[Tuple[str, str, int]] = [
 ]
 
 
+def _seed_key(product: str, name: str) -> str:
+    return f"{product}|{name}"
+
+
 def seed_spare_catalog(db: Session) -> int:
-    """Insert any missing (product_category, name) catalog rows. Returns added count."""
-    existing = {
-        (row.product_category, row.name)
-        for row in db.query(SpareCatalog.product_category, SpareCatalog.name).all()
+    """Insert each DEFAULT_CATALOG entry once, ever. Returns added count.
+
+    Rows are matched by `seed_key`, not by name, so a part an admin renamed (or
+    retired) is never re-added under its default name. Rows seeded before
+    seed_key existed are claimed by name first (a one-time backfill).
+    """
+    for (product, old_name), new_name in SEED_RENAMES.items():
+        db.query(SpareCatalog).filter(
+            SpareCatalog.product_category == product,
+            SpareCatalog.name == old_name,
+        ).update({SpareCatalog.name: new_name}, synchronize_session=False)
+
+    wanted = {_seed_key(p, n): (p, n, price) for p, n, price in DEFAULT_CATALOG}
+    for row in db.query(SpareCatalog).filter(SpareCatalog.seed_key.is_(None)).all():
+        key = _seed_key(row.product_category, row.name)
+        if key in wanted:
+            row.seed_key = key
+    db.flush()
+
+    seeded = {
+        k for (k,) in db.query(SpareCatalog.seed_key).filter(SpareCatalog.seed_key.isnot(None)).all()
     }
     added = 0
-    for product, name, price in DEFAULT_CATALOG:
-        if (product, name) in existing:
+    for key, (product, name, price) in wanted.items():
+        if key in seeded:
             continue
-        db.add(SpareCatalog(product_category=product, name=name, default_price_inr=price))
+        db.add(SpareCatalog(product_category=product, name=name, default_price_inr=price, seed_key=key))
         added += 1
+    db.commit()
     if added:
-        db.commit()
         logger.info("Seeded %d spare catalog rows", added)
     return added
+
+
+def ensure_spare_seed_key_column(engine: Engine) -> None:
+    """Add spare_catalog.seed_key if it's missing (idempotent, nullable, so the
+    ALTER is metadata-only and instant)."""
+    insp = inspect(engine)
+    if "spare_catalog" not in insp.get_table_names(schema=MIGRATION_SCHEMA):
+        return  # Fresh DB — create_all will include the column.
+    if _has_column(engine, "spare_catalog", "seed_key"):
+        return
+    with engine.begin() as conn:
+        conn.execute(text(f"ALTER TABLE {qualify('spare_catalog')} ADD COLUMN seed_key VARCHAR(260)"))
+        conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_spare_catalog_seed_key ON {qualify('spare_catalog')} (seed_key)"))
+    logger.info("Added spare_catalog.seed_key column")
 
 
 def retire_placeholder_spares(db: Session) -> int:
