@@ -137,8 +137,8 @@ def test_issued_quotation_renders_after_product_is_retired(client):
     assert c.post(ROOT, json=dup).status_code == 201
 
 
-# Quotation management is Manager-level throughout — the catalogue included.
-# Engineers and Sales stay out entirely.
+# Editing the catalogue is Manager-level. Sales reps can read it (see below);
+# Engineers stay out entirely.
 @pytest.mark.parametrize("method,path,kwargs", [
     ("get", "/products", {}),
     ("post", "/products", {"data": {"payload": '{"name": "M", "headline": "H"}'}}),
@@ -164,7 +164,7 @@ def test_catalogue_is_open_to_managers(client, method, path, kwargs):
     assert getattr(c, method)(f"{ROOT}{path}", **kwargs).status_code != 403
 
 
-@pytest.mark.parametrize("role", ["ENGINEER", "SALES"])
+@pytest.mark.parametrize("role", ["ENGINEER"])
 def test_catalogue_is_closed_below_manager(client, role):
     c, _, _ = client
     from app.main import app
@@ -179,3 +179,24 @@ def test_catalogue_is_closed_below_manager(client, role):
     app.dependency_overrides[get_current_user] = lambda: _U2()
     assert c.get(f"{ROOT}/products").status_code == 403
     assert c.post(f"{ROOT}/products", data={"payload": "{}"}).status_code == 403
+
+
+def test_sales_reps_can_read_but_not_edit_the_catalogue(client):
+    """Sales reps pick products into their quotations, so they can read the
+    catalogue (and upload one-off item pictures) but not change it."""
+    c, _, _ = client
+    from app.main import app
+    from app.services.auth import get_current_user
+
+    class _S:
+        id = 3
+        role = "SALES"
+        active = True
+        username = "sales-test"
+
+    app.dependency_overrides[get_current_user] = lambda: _S()
+    assert c.get(f"{ROOT}/products").status_code == 200
+    assert c.post(f"{ROOT}/products", data={"payload": "{}"}).status_code == 403
+    assert c.patch(f"{ROOT}/products/1", data={"payload": "{}"}).status_code == 403
+    assert c.delete(f"{ROOT}/products/1").status_code == 403
+    assert c.post(f"{ROOT}/products/reorder", json={"ids": []}).status_code == 403

@@ -1,6 +1,7 @@
-"""Quotation endpoints (plan §6). Every route is open to Managers and above
-(Super Admin + Admin + Manager; legacy OWNER via tier inheritance in
-`require_role`) — the quotation workflow and the product catalogue alike.
+"""Quotation endpoints (plan §6). The quotation workflow (and reading the
+product catalogue) is open to Sales reps and Managers and above (Super Admin +
+Admin + Manager + Sales; legacy OWNER via tier inheritance in `require_role`).
+Editing the product catalogue stays with Managers and above.
 
 Phase 1: `POST /preview` (render only). Phase 2: signatories, next-reference,
 `POST /` (issue), `GET /{id}`, `GET /{id}/file`, a read-only seed catalogue
@@ -57,9 +58,11 @@ router = APIRouter(prefix="/api/v1/admin/quotations", tags=["quotations"])
 # middleware's expose_headers in main.py).
 TOTALS_HEADERS = ("X-Subtotal", "X-Gst", "X-Grand-Total")
 
-# Quotation management — the workflow and the product catalogue alike — is
-# open to Managers and above.
-QuotationUser = Depends(require_role(UserRole.ADMIN, UserRole.MANAGER))
+# The quotation workflow is open to Sales reps and Managers and above.
+QuotationUser = Depends(require_role(UserRole.ADMIN, UserRole.MANAGER, UserRole.SALES))
+# Editing the product catalogue (shared prices / spec text) stays with Managers
+# and above.
+CatalogueEditor = Depends(require_role(UserRole.ADMIN, UserRole.MANAGER))
 
 
 @router.get("/signatories", response_model=list[SignatoryOut], summary="People who can sign a quotation")
@@ -125,7 +128,7 @@ async def create_product(
     payload: str = Form(..., description="QuotationProductIn as JSON"),
     image: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
-    user: User = QuotationUser,
+    user: User = CatalogueEditor,
 ):
     body = _parse_payload(payload, QuotationProductIn)
     img = await catalogue.read_image_upload(image) if image is not None and image.filename else None
@@ -133,7 +136,7 @@ async def create_product(
 
 
 @router.post("/products/reorder", response_model=list[QuotationProductOut], summary="Set sort order")
-def reorder_products(body: ReorderProductsIn, db: Session = Depends(get_db), _user: User = QuotationUser):
+def reorder_products(body: ReorderProductsIn, db: Session = Depends(get_db), _user: User = CatalogueEditor):
     return [product_to_out(p) for p in catalogue.reorder_products(db, body.ids)]
 
 
@@ -144,7 +147,7 @@ async def update_product(
     payload: str = Form("{}"),
     image: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
-    _user: User = QuotationUser,
+    _user: User = CatalogueEditor,
 ):
     p = catalogue.get_product_or_404(db, product_id)
     body = _parse_payload(payload, QuotationProductPatch)
@@ -153,7 +156,7 @@ async def update_product(
 
 
 @router.delete("/products/{product_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Retire a product (soft delete)")
-def delete_product(product_id: int, db: Session = Depends(get_db), _user: User = QuotationUser):
+def delete_product(product_id: int, db: Session = Depends(get_db), _user: User = CatalogueEditor):
     catalogue.retire_product(db, catalogue.get_product_or_404(db, product_id))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

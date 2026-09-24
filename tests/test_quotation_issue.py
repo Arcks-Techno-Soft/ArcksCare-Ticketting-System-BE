@@ -177,9 +177,9 @@ def test_storage_failure_inserts_nothing(client, monkeypatch):
     assert c.get("/api/v1/admin/quotations/next-reference?date=2026-07-14").json()["next_number"] == 1
 
 
-@pytest.mark.parametrize("role", ["ENGINEER", "SALES"])
-def test_quotations_are_closed_below_manager(client, role):
-    """Managers were let in when the gate was split; Engineers and Sales weren't."""
+@pytest.mark.parametrize("role", ["ENGINEER"])
+def test_quotations_are_closed_to_engineers(client, role):
+    """Managers and Sales reps are let in; Engineers aren't."""
     c, _, _ = client
     from app.main import app
     from app.services.auth import get_current_user
@@ -324,6 +324,35 @@ def test_managers_can_use_the_quotation_workflow(client):
     assert c.get(f"/api/v1/admin/quotations/{q['id']}").status_code == 200
     assert c.get("/api/v1/admin/quotations/products").status_code == 200
     assert c.get("/api/v1/admin/quotations/next-reference").status_code == 200
+
+
+def test_sales_reps_can_use_the_quotation_workflow_but_not_edit_the_catalogue(client):
+    """Sales reps get the whole quotation workflow (issue / read / download /
+    duplicate / edit) and can read the catalogue, but can't change it."""
+    c, _, _ = client
+    q = _issue(c)
+    from app.main import app
+    from app.services.auth import get_current_user
+
+    class _S:
+        id = 2
+        role = "SALES"
+        active = True
+        username = "sales-test"
+
+    app.dependency_overrides[get_current_user] = lambda: _S()
+    assert c.get(f"/api/v1/admin/quotations/{q['id']}/file?format=docx").status_code == 200
+    assert c.post(f"/api/v1/admin/quotations/{q['id']}/duplicate").status_code == 200
+    assert c.post("/api/v1/admin/quotations", json=_draft()).status_code == 201
+    assert c.get("/api/v1/admin/quotations").status_code == 200
+    assert c.get(f"/api/v1/admin/quotations/{q['id']}").status_code == 200
+    draft = c.get(f"/api/v1/admin/quotations/{q['id']}/draft").json()
+    assert c.put(f"/api/v1/admin/quotations/{q['id']}", json=draft).status_code == 200
+    assert c.get("/api/v1/admin/quotations/products").status_code == 200
+    assert c.get("/api/v1/admin/quotations/next-reference").status_code == 200
+    assert c.post("/api/v1/admin/quotations/products",
+                  data={"payload": '{"name": "M", "headline": "H"}'}).status_code == 403
+    assert c.delete("/api/v1/admin/quotations/products/1").status_code == 403
 
 
 def test_edit_keeps_the_reference_and_rerenders(client):
