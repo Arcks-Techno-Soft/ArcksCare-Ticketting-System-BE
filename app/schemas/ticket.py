@@ -52,6 +52,7 @@ class ProductCategory(str, Enum):
     TABLET = "Tablet"
     MONITOR = "Monitor"
     CCTV = "CCTV"
+    CASH_DRAWER = "Cash Drawer"
     OTHER = "Other"
 
 
@@ -63,6 +64,9 @@ _CATALOGUE_PRODUCTS = {
 
 
 class IssueCategory(str, Enum):
+    """The generic issue list, offered for products without a list of their
+    own. Printer / POS Machine / Kiosk / Cash Drawer get product-specific issues
+    in the web form (lib/options.ts); issue_category itself stays free text."""
     NO_POWER = "Not Powering On"
     DISPLAY = "Display Issue"
     PRINTING = "Printing Issue"

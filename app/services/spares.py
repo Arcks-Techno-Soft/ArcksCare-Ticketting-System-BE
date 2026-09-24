@@ -1,8 +1,7 @@
 """Spare-parts catalog seed + ticket charge calculation.
 
-The catalog values here are placeholder market-typical prices in INR — the
-ops team will replace them with real SKUs and prices later. Seeding is
-idempotent: rows with the same (product_category, name) won't be duplicated.
+Seeding is idempotent: rows with the same (product_category, name) won't be
+duplicated, and a seeded row an admin has since edited is never overwritten.
 """
 from __future__ import annotations
 
@@ -40,20 +39,70 @@ def oow_min_service_fee_inr(ticket: Ticket) -> int:
 logger = logging.getLogger("skposcare.spares")
 
 
+# Shared parts offered on every product's spare picker, below the product's own
+# parts (see the /spare-catalog endpoint).
+ACCESSORIES_CATEGORY = "Accessories"
+
 # (product_category, name, default_price_inr)
+#
+# POS Machine / Printer / Kiosk / Cash Drawer / Accessories come from the ops
+# team's spare list. Prices are GST-INCLUSIVE whole rupees (the sheet gives
+# e.g. "3200+18% = 3776" — we store 3776); tickets never add GST on top. Parts
+# the sheet left unpriced start at ₹0: an admin sets the price in Settings →
+# Spare parts, and engineers can edit it on the ticket while resolving.
+# The remaining categories are still placeholder market-typical prices.
 DEFAULT_CATALOG: List[Tuple[str, str, int]] = [
     # POS Machine
-    ("POS Machine", "Touchscreen panel", 4500),
-    ("POS Machine", "Receipt printer head", 1800),
-    ("POS Machine", "Power adapter (12V 5A)", 750),
-    ("POS Machine", "Cooling fan", 350),
-    ("POS Machine", "Internal SSD 128GB", 2200),
+    ("POS Machine", "Motherboard (5200 / N95)", 0),
+    ("POS Machine", "LCD Display Panel", 0),
+    ("POS Machine", "Touch Panel", 0),
+    ("POS Machine", "SSD", 0),
+    ("POS Machine", "RAM", 0),
+    ("POS Machine", "POS Adaptor", 3776),
+    ("POS Machine", "POS Power Button", 0),
     # Printer
-    ("Printer", "Print head", 1500),
-    ("Printer", "Paper roll holder", 200),
-    ("Printer", "Cutter blade", 450),
-    ("Printer", "Power supply", 600),
-    ("Printer", "Roller assembly", 800),
+    ("Printer", "Printer Motherboard", 3776),
+    ("Printer", "Printer Head", 3363),
+    ("Printer", "Printer Cutter", 3363),
+    ("Printer", "Printer Blid", 0),
+    ("Printer", "Printer Adaptor (24V)", 3776),
+    # Kiosk
+    ("Kiosk", "ViewSonic Touch Monitor", 0),
+    ("Kiosk", "Leoxsys Touch Monitor", 0),
+    ("Kiosk", "Touch Cable", 0),
+    ("Kiosk", "Power Cable", 0),
+    ("Kiosk", "HDMI Cable", 0),
+    ("Kiosk", "12V Adaptor", 0),
+    ("Kiosk", "Extension Box", 0),
+    # Cash Drawer
+    ("Cash Drawer", "Cash Drawer", 0),
+    ("Cash Drawer", "Cash Drawer Key Set", 0),
+    # Accessories (offered on every product)
+    (ACCESSORIES_CATEGORY, "Lenovo Tab", 0),
+    (ACCESSORIES_CATEGORY, "Laptop RAM DDR3", 0),
+    (ACCESSORIES_CATEGORY, "Laptop RAM DDR4", 0),
+    (ACCESSORIES_CATEGORY, "Desktop RAM DDR3", 0),
+    (ACCESSORIES_CATEGORY, "Desktop RAM DDR4", 0),
+    (ACCESSORIES_CATEGORY, "Inbuilt WiFi Card", 0),
+    (ACCESSORIES_CATEGORY, "TP-Link WiFi Dongle", 0),
+    (ACCESSORIES_CATEGORY, "TP-Link 5 Port Gigabit Switch", 0),
+    (ACCESSORIES_CATEGORY, "TP-Link 8 Port Gigabit Switch", 0),
+    (ACCESSORIES_CATEGORY, "TP-Link 16 Port Gigabit Switch", 0),
+    (ACCESSORIES_CATEGORY, "TP-Link 24 Port Gigabit Switch", 0),
+    (ACCESSORIES_CATEGORY, "TP-Link PoE Switch", 0),
+    (ACCESSORIES_CATEGORY, "TP-Link Access Point", 0),
+    (ACCESSORIES_CATEGORY, "TP-Link Dual Band Router", 0),
+    (ACCESSORIES_CATEGORY, "D-Link RJ45 to RJ45 Connector", 0),
+    (ACCESSORIES_CATEGORY, "D-Link 5 Port Switch", 0),
+    (ACCESSORIES_CATEGORY, "D-Link 8 Port Switch", 0),
+    (ACCESSORIES_CATEGORY, "Dell Keyboard", 0),
+    (ACCESSORIES_CATEGORY, "Dell Mouse", 0),
+    (ACCESSORIES_CATEGORY, "RJ45 Jack", 0),
+    (ACCESSORIES_CATEGORY, "CAT6 Cable", 0),
+    (ACCESSORIES_CATEGORY, "Numeric UPS 600VA", 0),
+    (ACCESSORIES_CATEGORY, "NVMe SSD", 0),
+    (ACCESSORIES_CATEGORY, "M.2 SSD", 0),
+    (ACCESSORIES_CATEGORY, "SATA SSD", 0),
     # Kitchen Display Screen
     ("Kitchen Display Screen", "LCD panel 15\"", 5500),
     ("Kitchen Display Screen", "HDMI cable", 250),
@@ -66,12 +115,6 @@ DEFAULT_CATALOG: List[Tuple[str, str, int]] = [
     ("UPS", "Cooling fan", 350),
     ("UPS", "Power switch", 150),
     ("UPS", "Display LCD", 900),
-    # Kiosk
-    ("Kiosk", "Touchscreen overlay", 4000),
-    ("Kiosk", "NUC mainboard", 6500),
-    ("Kiosk", "Bill acceptor", 8500),
-    ("Kiosk", "Power supply", 1100),
-    ("Kiosk", "Cooling fan", 500),
     # Tablet
     ("Tablet", "Display assembly", 3800),
     ("Tablet", "Battery", 1500),
@@ -92,6 +135,28 @@ DEFAULT_CATALOG: List[Tuple[str, str, int]] = [
     ("CCTV", "Mount bracket", 200),
 ]
 
+# Launch-time placeholder parts that the ops team's real list replaced. Retired
+# (active=False, never deleted — past tickets' spare rows keep their snapshot)
+# on startup, but only while the row still carries its placeholder price, so a
+# part an admin has since priced and re-activated is left alone.
+RETIRED_PLACEHOLDERS: List[Tuple[str, str, int]] = [
+    ("POS Machine", "Touchscreen panel", 4500),
+    ("POS Machine", "Receipt printer head", 1800),
+    ("POS Machine", "Power adapter (12V 5A)", 750),
+    ("POS Machine", "Cooling fan", 350),
+    ("POS Machine", "Internal SSD 128GB", 2200),
+    ("Printer", "Print head", 1500),
+    ("Printer", "Paper roll holder", 200),
+    ("Printer", "Cutter blade", 450),
+    ("Printer", "Power supply", 600),
+    ("Printer", "Roller assembly", 800),
+    ("Kiosk", "Touchscreen overlay", 4000),
+    ("Kiosk", "NUC mainboard", 6500),
+    ("Kiosk", "Bill acceptor", 8500),
+    ("Kiosk", "Power supply", 1100),
+    ("Kiosk", "Cooling fan", 500),
+]
+
 
 def seed_spare_catalog(db: Session) -> int:
     """Insert any missing (product_category, name) catalog rows. Returns added count."""
@@ -109,6 +174,30 @@ def seed_spare_catalog(db: Session) -> int:
         db.commit()
         logger.info("Seeded %d spare catalog rows", added)
     return added
+
+
+def retire_placeholder_spares(db: Session) -> int:
+    """Deactivate the launch placeholders listed in RETIRED_PLACEHOLDERS that
+    still carry their placeholder price. Idempotent. Returns retired count."""
+    retired = 0
+    for product, name, price in RETIRED_PLACEHOLDERS:
+        row = (
+            db.query(SpareCatalog)
+            .filter(
+                SpareCatalog.product_category == product,
+                SpareCatalog.name == name,
+                SpareCatalog.default_price_inr == price,
+                SpareCatalog.active.is_(True),
+            )
+            .one_or_none()
+        )
+        if row is not None:
+            row.active = False
+            retired += 1
+    if retired:
+        db.commit()
+        logger.info("Retired %d placeholder spare catalog rows", retired)
+    return retired
 
 
 def ensure_service_fee_column(engine: Engine) -> None:
