@@ -95,3 +95,40 @@ def test_catalog_editing_is_admin_level(client, role):
     assert c.get(f"{ROOT}?product=Printer").status_code == 200  # everyone can read
     assert c.post(ROOT, json={"product_category": "Printer", "name": "X"}).status_code == 403
     assert c.patch(f"{ROOT}/1", json={"default_price_inr": 1}).status_code == 403
+
+
+def test_renamed_or_retired_seed_parts_are_not_re_added_on_restart(client):
+    """Seeding matches rows by seed_key, not by name — renaming a starter part
+    in Settings must not bring the old name back on the next startup."""
+    c, Session, _ = client
+    from app.models.spare import SpareCatalog
+    with Session() as db:
+        seed_spare_catalog(db)
+        total = db.query(SpareCatalog).count()
+    cutter = next(r for r in c.get(f"{ROOT}?product=Printer").json() if r["name"] == "Printer Cutter")
+    assert c.patch(f"{ROOT}/{cutter['id']}", json={"name": "Printer Auto Cutter"}).status_code == 200
+    mouse = next(r for r in c.get(f"{ROOT}?product=Printer").json() if r["name"] == "Dell Mouse")
+    assert c.patch(f"{ROOT}/{mouse['id']}", json={"active": False}).status_code == 200
+    with Session() as db:
+        assert seed_spare_catalog(db) == 0  # the "restart"
+        assert db.query(SpareCatalog).count() == total
+        assert db.query(SpareCatalog).filter_by(name="Printer Cutter").count() == 0
+
+
+def test_legacy_rows_are_claimed_and_blid_becomes_blade(client):
+    """Rows seeded before seed_key existed (NULL key), including the misspelt
+    "Printer Blid", are claimed by name instead of duplicated."""
+    _, Session, _ = client
+    from app.models.spare import SpareCatalog
+    with Session() as db:
+        db.add(SpareCatalog(product_category="Printer", name="Printer Blid", default_price_inr=0))
+        db.add(SpareCatalog(product_category="Printer", name="Printer Head", default_price_inr=3500))
+        db.commit()
+        added = seed_spare_catalog(db)
+        assert added == len(DEFAULT_CATALOG) - 2
+        assert db.query(SpareCatalog).filter_by(name="Printer Blid").count() == 0
+        blade = db.query(SpareCatalog).filter_by(name="Printer Blade").one()
+        assert blade.seed_key == "Printer|Printer Blade"
+        head = db.query(SpareCatalog).filter_by(name="Printer Head").one()
+        assert head.seed_key == "Printer|Printer Head" and head.default_price_inr == 3500  # price kept
+        assert db.query(SpareCatalog).filter(SpareCatalog.seed_key.is_(None)).count() == 0

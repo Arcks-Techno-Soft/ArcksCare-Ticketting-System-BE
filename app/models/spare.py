@@ -25,6 +25,10 @@ class SpareCatalog(Base):
     name: Mapped[str] = mapped_column(String(160))
     default_price_inr: Mapped[int] = mapped_column(Integer)
     active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    # "<product_category>|<name>" of the DEFAULT_CATALOG entry this row was
+    # seeded from; NULL for parts an admin added. Stays fixed when the part is
+    # renamed, so startup seeding never re-adds a renamed part under its old name.
+    seed_key: Mapped[Optional[str]] = mapped_column(String(260), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
