@@ -107,7 +107,7 @@ DEFAULT_CATALOG: List[Tuple[str, str, int]] = [
     ("Kitchen Display Screen", "LCD panel 15\"", 5500),
     ("Kitchen Display Screen", "HDMI cable", 250),
     ("Kitchen Display Screen", "Mounting bracket", 600),
-    ("Kitchen Display Screen", "Power adapter", 700),
+    ("Kitchen Display Screen", "Power adaptor", 700),
     ("Kitchen Display Screen", "Cooling fan", 400),
     # UPS
     ("UPS", "12V battery", 1800),
@@ -130,17 +130,21 @@ DEFAULT_CATALOG: List[Tuple[str, str, int]] = [
     # CCTV
     ("CCTV", "IR LED board", 450),
     ("CCTV", "Lens module", 750),
-    ("CCTV", "Power adapter", 350),
+    ("CCTV", "Power adaptor", 350),
     ("CCTV", "BNC cable (10m)", 250),
     ("CCTV", "Mount bracket", 200),
 ]
 
 # One-off corrections to parts already seeded under a wrong name:
-# (product_category, old name) -> new name. Applied on startup only while the
-# row still has the old name and before seeding, so the corrected entry above
-# claims the existing row instead of being inserted alongside it.
+# (product_category, old name) -> new name. Applied on startup before seeding:
+# a row still carrying the old name is renamed, and the row's seed_key moves to
+# the new name, so the corrected entry above claims the existing row instead of
+# being inserted alongside it. A row an admin has since renamed keeps its name.
+# ("Adaptor" is the ops team's spelling, used across the catalog and issues.)
 SEED_RENAMES: Dict[Tuple[str, str], str] = {
     ("Printer", "Printer Blid"): "Printer Blade",
+    ("Kitchen Display Screen", "Power adapter"): "Power adaptor",
+    ("CCTV", "Power adapter"): "Power adaptor",
 }
 
 # Launch-time placeholder parts that the ops team's real list replaced. Retired
@@ -182,6 +186,9 @@ def seed_spare_catalog(db: Session) -> int:
             SpareCatalog.product_category == product,
             SpareCatalog.name == old_name,
         ).update({SpareCatalog.name: new_name}, synchronize_session=False)
+        db.query(SpareCatalog).filter(
+            SpareCatalog.seed_key == _seed_key(product, old_name),
+        ).update({SpareCatalog.seed_key: _seed_key(product, new_name)}, synchronize_session=False)
 
     wanted = {_seed_key(p, n): (p, n, price) for p, n, price in DEFAULT_CATALOG}
     for row in db.query(SpareCatalog).filter(SpareCatalog.seed_key.is_(None)).all():

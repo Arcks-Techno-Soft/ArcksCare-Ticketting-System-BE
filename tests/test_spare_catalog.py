@@ -132,3 +132,29 @@ def test_legacy_rows_are_claimed_and_blid_becomes_blade(client):
         head = db.query(SpareCatalog).filter_by(name="Printer Head").one()
         assert head.seed_key == "Printer|Printer Head" and head.default_price_inr == 3500  # price kept
         assert db.query(SpareCatalog).filter(SpareCatalog.seed_key.is_(None)).count() == 0
+
+
+def test_seed_renames_move_the_seed_key_so_nothing_is_duplicated(client):
+    """A corrected default name must claim the already-seeded row (which holds
+    the OLD seed_key) rather than insert a second row on the next startup —
+    and a row an admin renamed in the meantime keeps the admin's name."""
+    _, Session, _ = client
+    from app.models.spare import SpareCatalog
+    with Session() as db:
+        db.add(SpareCatalog(product_category="CCTV", name="Power adapter", default_price_inr=350,
+                            seed_key="CCTV|Power adapter"))
+        db.add(SpareCatalog(product_category="Kitchen Display Screen", name="KDS PSU", default_price_inr=900,
+                            seed_key="Kitchen Display Screen|Power adapter"))
+        db.commit()
+        seed_spare_catalog(db)
+        cctv = db.query(SpareCatalog).filter_by(product_category="CCTV").filter(
+            SpareCatalog.name.ilike("power adapt%")).all()
+        assert [(r.name, r.seed_key, r.default_price_inr) for r in cctv] == [
+            ("Power adaptor", "CCTV|Power adaptor", 350)]
+        kds = db.query(SpareCatalog).filter_by(seed_key="Kitchen Display Screen|Power adaptor").one()
+        assert kds.name == "KDS PSU" and kds.default_price_inr == 900
+        assert db.query(SpareCatalog).filter_by(product_category="Kitchen Display Screen",
+                                                name="Power adaptor").count() == 0
+        assert seed_spare_catalog(db) == 0  # a second restart changes nothing
+    names = [n for _, n, _ in DEFAULT_CATALOG]
+    assert not any("adapter" in n.lower() for n in names)
