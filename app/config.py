@@ -124,7 +124,8 @@ class Settings(BaseSettings):
     # Keep well below the smallest reminder interval so reminders fire on time.
     reminder_tick_seconds: int = Field(default=120)
     # Max reminders sent per ticket per stage before it goes quiet (the cap).
-    reminder_cap: int = Field(default=5)
+    # Override with REMINDER_CAP in the environment.
+    reminder_cap: int = Field(default=2)
     # Per-stage cadence, in minutes.
     reminder_ack_interval_minutes: int = Field(default=10)      # OPEN -> not acknowledged
     reminder_assign_interval_minutes: int = Field(default=10)   # ACKNOWLEDGED -> not assigned
