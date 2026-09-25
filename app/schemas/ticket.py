@@ -53,6 +53,7 @@ class ProductCategory(str, Enum):
     MONITOR = "Monitor"
     CCTV = "CCTV"
     CASH_DRAWER = "Cash Drawer"
+    BIOMETRIC = "Biometric"
     OTHER = "Other"
 
 
