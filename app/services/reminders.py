@@ -12,7 +12,7 @@ Three stages, each with its own cadence and audience:
     ASSIGN   ACKNOWLEDGED, not assigned         10 min   owner + admin + managers
     ACCEPT   ASSIGNED, engineer not accepted    30 min   managers + assigned engineer
 
-All three are capped at ``settings.reminder_cap`` (default 5) reminders per
+All three are capped at ``settings.reminder_cap`` (default 2) reminders per
 ticket per stage. After the cap the ticket goes silent — surface it in the
 open-backlog view instead of continuing to ping.
 
