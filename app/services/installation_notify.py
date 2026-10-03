@@ -59,7 +59,7 @@ def _build_bodies(kind: str, rep_name: str, reference: str, where: str) -> tuple
             "installation.\n\n"
             f"Installation: {reference}\n"
             f"Customer: {where}\n\n"
-            "Open the ArcksCare app to view the details."
+            "Open the SK-POS Care app to view the details."
         )
     else:  # KIND_CLOSED
         plain = (
@@ -68,7 +68,7 @@ def _build_bodies(kind: str, rep_name: str, reference: str, where: str) -> tuple
             "closed.\n\n"
             f"Installation: {reference}\n"
             f"Customer: {where}\n\n"
-            "Thank you. Open the ArcksCare app for the full record."
+            "Thank you. Open the SK-POS Care app for the full record."
         )
     return params, plain
 
@@ -159,7 +159,7 @@ def _build_engineer_bodies(
         f"Customer: {where}\n"
         f"Expected date: {expected}\n"
         f"Assigned by: {assigned_by}\n\n"
-        "Open the ArcksCare app to view the details."
+        "Please open the SK-POS Care app to view the details and plan your visit."
     )
     return params, plain
 

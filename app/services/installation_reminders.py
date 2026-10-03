@@ -106,7 +106,7 @@ def _build_bodies(
         f"Installation {reference} is scheduled for {date_text} ({when_text}).\n\n"
         f"Customer: {where}\n"
         f"Engineer: {engineer}\n\n"
-        "Open the ArcksCare app to confirm the schedule."
+        "Open the SK-POS Care app to confirm the schedule."
     )
     return params, plain
 
