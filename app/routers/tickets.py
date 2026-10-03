@@ -44,7 +44,7 @@ router = APIRouter(prefix="/api/v1/tickets", tags=["tickets"])
         }
     },
 )
-async def submit_ticket(
+def submit_ticket(
     background: BackgroundTasks,
     payload: str = Form(..., description="JSON-encoded TicketCreate"),
     files: Optional[List[UploadFile]] = File(default=None, description="Optional attachments (JPG/PNG/GIF/MP4/MOV, <=50MB each)"),

@@ -74,7 +74,7 @@ def seed_quotation_products(db: Session) -> int:
 
 # ----------------------------- images ------------------------------------ #
 
-async def read_image_upload(upload: UploadFile) -> Tuple[bytes, str, str]:
+def read_image_upload(upload: UploadFile) -> Tuple[bytes, str, str]:
     """Validate + re-encode an uploaded picture.
 
     Returns (bytes, content_type, extension). Anything Pillow can't decode is
@@ -85,7 +85,7 @@ async def read_image_upload(upload: UploadFile) -> Tuple[bytes, str, str]:
     name = upload.filename or ""
     if not mime.startswith("image/") and name.rsplit(".", 1)[-1].lower() not in {"png", "jpg", "jpeg", "webp", "gif", "bmp"}:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Please upload an image (PNG or JPEG)")
-    raw = await upload.read(MAX_IMAGE_BYTES + 1)
+    raw = upload.file.read(MAX_IMAGE_BYTES + 1)
     if len(raw) > MAX_IMAGE_BYTES:
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Image must be 5 MB or smaller")
     if not raw:

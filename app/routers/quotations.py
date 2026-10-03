@@ -124,14 +124,14 @@ def _parse_payload(payload: str, model):
 
 @router.post("/products", response_model=QuotationProductOut, status_code=status.HTTP_201_CREATED,
              summary="Add a catalogue product (multipart: payload JSON + optional image)")
-async def create_product(
+def create_product(
     payload: str = Form(..., description="QuotationProductIn as JSON"),
     image: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
     user: User = CatalogueEditor,
 ):
     body = _parse_payload(payload, QuotationProductIn)
-    img = await catalogue.read_image_upload(image) if image is not None and image.filename else None
+    img = catalogue.read_image_upload(image) if image is not None and image.filename else None
     return product_to_out(catalogue.create_product(db, body, user.id, img))
 
 
@@ -142,7 +142,7 @@ def reorder_products(body: ReorderProductsIn, db: Session = Depends(get_db), _us
 
 @router.patch("/products/{product_id}", response_model=QuotationProductOut,
               summary="Edit a catalogue product (multipart: payload JSON + optional image)")
-async def update_product(
+def update_product(
     product_id: int,
     payload: str = Form("{}"),
     image: Optional[UploadFile] = File(None),
@@ -151,7 +151,7 @@ async def update_product(
 ):
     p = catalogue.get_product_or_404(db, product_id)
     body = _parse_payload(payload, QuotationProductPatch)
-    img = await catalogue.read_image_upload(image) if image is not None and image.filename else None
+    img = catalogue.read_image_upload(image) if image is not None and image.filename else None
     return product_to_out(catalogue.update_product(db, p, body, img))
 
 
@@ -163,8 +163,8 @@ def delete_product(product_id: int, db: Session = Depends(get_db), _user: User =
 
 @router.post("/item-images", response_model=ItemImageOut, status_code=status.HTTP_201_CREATED,
              summary="Upload a one-off item picture")
-async def upload_item_image(image: UploadFile = File(...), _user: User = QuotationUser):
-    data, ctype, ext = await catalogue.read_image_upload(image)
+def upload_item_image(image: UploadFile = File(...), _user: User = QuotationUser):
+    data, ctype, ext = catalogue.read_image_upload(image)
     key = catalogue.store_item_image(data, ctype, ext)
     return ItemImageOut(storage_key=key, url=catalogue.image_url_for(key, None) or "")
 

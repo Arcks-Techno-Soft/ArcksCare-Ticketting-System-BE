@@ -1319,7 +1319,7 @@ def resolve_ticket(
 
 
 @router.post("/tickets/{reference}/sign-customer", response_model=TicketResponse)
-async def sign_as_customer_via_engineer(
+def sign_as_customer_via_engineer(
     reference: str,
     signer_name: str = Form(..., min_length=2, max_length=120),
     signature: UploadFile = File(..., description="PNG of the customer's signature"),
@@ -1332,7 +1332,7 @@ async def sign_as_customer_via_engineer(
     countersign via POST /sign-engineer to close the ticket.
     """
     ticket = _load_ticket(db, reference, user)
-    image_bytes = await signature.read()
+    image_bytes = signature.file.read()
     record_customer_signature_via_engineer(
         db, ticket, user,
         signer_name=signer_name,
@@ -1344,7 +1344,7 @@ async def sign_as_customer_via_engineer(
 
 
 @router.post("/tickets/{reference}/sign-engineer", response_model=TicketResponse)
-async def sign_as_engineer(
+def sign_as_engineer(
     reference: str,
     signature: UploadFile = File(..., description="PNG of the engineer's signature"),
     photo: UploadFile | None = File(None, description="Optional photo of the customer"),
@@ -1358,8 +1358,8 @@ async def sign_as_engineer(
     RESOLVED → CLOSED.
     """
     ticket = _load_ticket(db, reference, user)
-    image_bytes = await signature.read()
-    photo_bytes = await photo.read() if photo is not None else None
+    image_bytes = signature.file.read()
+    photo_bytes = photo.file.read() if photo is not None else None
     record_engineer_signature(
         db, ticket, user, image_bytes,
         content_type=signature.content_type or "image/png",
@@ -1540,7 +1540,7 @@ def list_notes(
 
 
 @router.post("/tickets/{reference}/notes", response_model=WorkNoteOut, status_code=201)
-async def add_note(
+def add_note(
     reference: str,
     body: str = Form(..., min_length=2, max_length=4000),
     images: List[UploadFile] = File(default=[]),

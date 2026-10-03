@@ -37,11 +37,14 @@ class Settings(BaseSettings):
     # of every table inside the SAME database — production data is untouched.
     # Ignored on SQLite (no schema concept there).
     db_schema: str = Field(default="public")
-    # Pool sizing — keep low so a single dev process can't exhaust Supabase's
-    # session-mode pooler (which caps at 15 client connections). Production
-    # behind the transaction-mode pooler (port 6543) can safely raise these.
-    db_pool_size: int = Field(default=3)
-    db_max_overflow: int = Field(default=2)
+    # Pool sizing. Production talks to a local Postgres (max_connections=100)
+    # from one uvicorn worker whose sync handlers run on a ~40-thread pool, and
+    # the reminder scheduler threads share this pool too. 3+2 was sized for the
+    # old Supabase session pooler and made requests queue past the mobile
+    # app's 20 s timeout. Lower via DB_POOL_SIZE / DB_MAX_OVERFLOW if pointing
+    # at a connection-capped pooler again.
+    db_pool_size: int = Field(default=10)
+    db_max_overflow: int = Field(default=10)
     db_pool_recycle_seconds: int = Field(default=300)
 
     # CORS

@@ -490,7 +490,7 @@ def update_expected_date_endpoint(
 # --------------------------- invoice document --------------------------- #
 
 @router.post("/{reference}/invoice-documents", response_model=InstallationOut)
-async def upload_invoice_documents(
+def upload_invoice_documents(
     reference: str,
     files: List[UploadFile] = File(...),
     db: Session = Depends(get_db),
@@ -523,7 +523,7 @@ def delete_invoice_document_by_id(
 # --- single-document endpoints, kept for clients built before multi-upload --- #
 
 @router.post("/{reference}/invoice-document", response_model=InstallationOut)
-async def upload_invoice_document(
+def upload_invoice_document(
     reference: str,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -601,7 +601,7 @@ def list_notes(
 
 
 @router.post("/{reference}/notes", response_model=InstallationNoteOut, status_code=201)
-async def add_note_endpoint(
+def add_note_endpoint(
     reference: str,
     body: str = Form(..., min_length=2, max_length=4000),
     images: List[UploadFile] = File(default=[]),
@@ -669,7 +669,7 @@ def close_endpoint(
 # --------------------------- signing ------------------------------------ #
 
 @router.post("/{reference}/sign-customer", response_model=InstallationOut)
-async def sign_customer(
+def sign_customer(
     reference: str,
     signer_name: str = Form(..., min_length=2, max_length=120),
     signature: UploadFile = File(...),
@@ -677,7 +677,7 @@ async def sign_customer(
     user: User = Depends(get_current_user),
 ):
     inst = _load(db, reference)
-    image_bytes = await signature.read()
+    image_bytes = signature.file.read()
     record_customer_signature_via_engineer(
         db, inst, user,
         signer_name=signer_name,
@@ -689,7 +689,7 @@ async def sign_customer(
 
 
 @router.post("/{reference}/sign-engineer", response_model=InstallationOut)
-async def sign_engineer(
+def sign_engineer(
     reference: str,
     signature: UploadFile = File(...),
     photo: UploadFile | None = File(None, description="Optional photo of the customer"),
@@ -699,8 +699,8 @@ async def sign_engineer(
     """Engineer signs and closes the installation. An optional customer photo,
     captured at this final sign-off step, is saved and embedded in the PDF."""
     inst = _load(db, reference)
-    image_bytes = await signature.read()
-    photo_bytes = await photo.read() if photo is not None else None
+    image_bytes = signature.file.read()
+    photo_bytes = photo.file.read() if photo is not None else None
     record_engineer_signature(
         db, inst, user, image_bytes,
         content_type=signature.content_type or "image/png",

@@ -130,14 +130,14 @@ def fetch_resolution(token: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{token}/customer", response_model=PublicResolutionDoc, status_code=201)
-async def submit_customer_signature(
+def submit_customer_signature(
     token: str,
     signer_name: str = Form(..., min_length=2, max_length=120),
     signature: UploadFile = File(..., description="PNG of the customer's signature"),
     db: Session = Depends(get_db),
 ):
     ticket, resolution = get_resolution_by_token(db, token)
-    image_bytes = await signature.read()
+    image_bytes = signature.file.read()
     record_customer_signature(
         db, ticket, resolution,
         signer_name=signer_name,
@@ -160,7 +160,7 @@ def fetch_field_resolution(token: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{token}/field", response_model=FieldSignDoc, status_code=201)
-async def submit_field_signatures(
+def submit_field_signatures(
     token: str,
     sub_engineer_id: int = Form(..., description="ID of the signing sub-engineer"),
     customer_signer_name: str = Form(..., min_length=2, max_length=120),
@@ -176,9 +176,9 @@ async def submit_field_signatures(
     An optional customer photo and any number of work photos/videos may
     accompany the signatures."""
     ticket, resolution = get_resolution_by_token(db, token)
-    customer_bytes = await customer_signature.read()
-    engineer_bytes = await engineer_signature.read()
-    photo_bytes = await photo.read() if photo is not None else None
+    customer_bytes = customer_signature.file.read()
+    engineer_bytes = engineer_signature.file.read()
+    photo_bytes = photo.file.read() if photo is not None else None
     record_field_signatures(
         db, ticket, resolution,
         sub_engineer_id=sub_engineer_id,
@@ -262,7 +262,7 @@ def fetch_installation_field_doc(token: str, db: Session = Depends(get_db)):
     response_model=InstallationFieldSignDoc,
     status_code=201,
 )
-async def submit_installation_field_signatures(
+def submit_installation_field_signatures(
     token: str,
     sub_engineer_id: int = Form(..., description="ID of the signing sub-engineer"),
     customer_signer_name: str = Form(..., min_length=2, max_length=120),
@@ -281,9 +281,9 @@ async def submit_installation_field_signatures(
     )
 
     inst, resolution = get_installation_resolution_by_token(db, token)
-    customer_bytes = await customer_signature.read()
-    engineer_bytes = await engineer_signature.read()
-    photo_bytes = await photo.read() if photo is not None else None
+    customer_bytes = customer_signature.file.read()
+    engineer_bytes = engineer_signature.file.read()
+    photo_bytes = photo.file.read() if photo is not None else None
     record_installation_field_signatures(
         db, inst, resolution,
         sub_engineer_id=sub_engineer_id,
