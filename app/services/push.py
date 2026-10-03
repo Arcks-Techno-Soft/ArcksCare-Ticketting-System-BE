@@ -173,6 +173,23 @@ def notify_installation_declined(installation_id: int, engineer_name: str, reaso
         )
 
 
+def notify_installation_assigned(installation_id: int, engineer_id: int) -> None:
+    """Installation assigned → notify just the assigned engineer."""
+    with SessionLocal() as db:
+        from ..models.installation import Installation  # local import avoids load cycle
+
+        installation = db.get(Installation, installation_id)
+        if installation is None:
+            return
+        tokens = _tokens_for_users(db, [engineer_id])
+        _send_to_tokens(
+            tokens,
+            title="New installation assigned to you",
+            body=f"{installation.reference} · {installation.business_name}",
+            data={"type": "INSTALLATION_ASSIGNED", "reference": installation.reference},
+        )
+
+
 def notify_ticket_assigned(ticket_id: int, engineer_id: int) -> None:
     """Ticket assigned → notify just the assigned engineer."""
     with SessionLocal() as db:

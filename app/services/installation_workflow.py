@@ -434,6 +434,7 @@ def assign(db: Session, installation: Installation, actor: User, engineer_id: in
     _require_status(installation, {InstallationStatus.NEW.value, InstallationStatus.ASSIGNED.value})
 
     prev_status = installation.status
+    prev_engineer_id = installation.assigned_engineer_id
     is_reassign = (
         installation.assigned_engineer_id is not None
         and installation.assigned_engineer_id != engineer.id
@@ -459,6 +460,12 @@ def assign(db: Session, installation: Installation, actor: User, engineer_id: in
         engineer.username,
         actor.username,
     )
+    # Tell the engineer (WhatsApp + push) — but not when they assigned it to
+    # themselves, or when it was already theirs (a no-op re-assign).
+    if engineer.id != actor.id and engineer.id != prev_engineer_id:
+        from .installation_notify import notify_engineer_assigned
+
+        notify_engineer_assigned(installation.id, engineer.id)
     return installation, engineer
 
 

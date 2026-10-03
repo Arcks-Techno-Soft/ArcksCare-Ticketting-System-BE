@@ -143,6 +143,10 @@ class Settings(BaseSettings):
     # Blank -> plain-text body (Sandbox only).
     twilio_install_assign_content_sid: str = Field(default="")
     twilio_install_closed_content_sid: str = Field(default="")
+    # Approved content-template SID for the engineer installation-assignment
+    # alert. {{1}}..{{5}} = engineer name, installation reference, customer,
+    # expected date, assigned by. Blank -> plain-text body (Sandbox only).
+    twilio_install_engineer_assign_content_sid: str = Field(default="")
     # Approved content-template SIDs for the sales-rep TICKET alerts.
     # {{1}}..{{3}} vars for both = rep name, ticket reference, business name.
     # Blank -> plain-text body (Sandbox only).

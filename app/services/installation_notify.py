@@ -1,10 +1,15 @@
-"""WhatsApp notifications to the credited sales rep on an installation.
+"""WhatsApp notifications about an installation to its sales rep and engineer.
 
 Two events notify the installation's ``sales_rep``:
 
 * ASSIGNED — a sales rep is credited on an installation (at create time, or
   when an Admin/Manager sets/changes the rep via the sales-rep endpoint).
 * CLOSED   — the installation they sourced is completed and closed.
+
+One event notifies the ``assigned_engineer`` (WhatsApp + mobile push), via
+:func:`notify_engineer_assigned`, fired from ``installation_workflow.assign``:
+
+* the installation is assigned or reassigned to them by someone else.
 
 Fire-and-forget: callers invoke :func:`notify_sales_rep_assigned` /
 :func:`notify_sales_rep_closed`, which spawn a daemon thread so the request
@@ -26,6 +31,7 @@ import threading
 from ..config import get_settings
 from ..database import SessionLocal
 from ..models.installation import Installation
+from ..models.user import User
 from .whatsapp import (
     _normalise_phone,
     _send_one,
@@ -133,6 +139,110 @@ def _dispatch(installation_id: int, kind: str) -> None:
         target=_notify,
         args=(installation_id, kind),
         name=f"install-notify-{kind.lower()}-{installation_id}",
+        daemon=True,
+    ).start()
+
+
+def _build_engineer_bodies(
+    engineer_name: str, reference: str, where: str, expected: str, assigned_by: str
+) -> tuple[list[str], str]:
+    """Return ``(template_params, plain_text)`` for an engineer assignment.
+
+    Template variable order MUST match the approved template's {{1}}..{{5}} =
+    engineer name, installation reference, customer, expected date, assigned by.
+    """
+    params = [engineer_name, reference, where, expected, assigned_by]
+    plain = (
+        "*New Installation Assigned*\n\n"
+        f"Hi {engineer_name}, a new installation has been assigned to you.\n\n"
+        f"Installation: {reference}\n"
+        f"Customer: {where}\n"
+        f"Expected date: {expected}\n"
+        f"Assigned by: {assigned_by}\n\n"
+        "Open the ArcksCare app to view the details."
+    )
+    return params, plain
+
+
+def _notify_engineer(installation_id: int, engineer_id: int) -> None:
+    """Send one WhatsApp message to the installation's newly assigned engineer."""
+    if not _twilio_configured():
+        logger.debug(
+            "Installation notify: Twilio not configured — skipping engineer alert for id=%s",
+            installation_id,
+        )
+        return
+
+    settings = get_settings()
+    with SessionLocal() as db:
+        inst = db.get(Installation, installation_id)
+        engineer = db.get(User, engineer_id)
+        if inst is None or engineer is None:
+            logger.warning(
+                "Installation engineer alert: installation id=%s or engineer id=%s missing",
+                installation_id, engineer_id,
+            )
+            return
+        phone = _normalise_phone(engineer.phone)
+        if not phone:
+            logger.info(
+                "Installation engineer alert %s: engineer %s has no phone — skipping",
+                inst.reference, engineer.username,
+            )
+            return
+
+        engineer_name = engineer.name or engineer.username
+        where = inst.business_name + (f", {inst.city}" if inst.city else "")
+        expected = (
+            inst.expected_installation_date.strftime("%d %b %Y")
+            if inst.expected_installation_date
+            else "Not scheduled"
+        )
+        assigned_by = (
+            (inst.assigned_by.name or inst.assigned_by.username)
+            if inst.assigned_by
+            else "Manager"
+        )
+        params, plain = _build_engineer_bodies(
+            engineer_name, inst.reference, where, expected, assigned_by
+        )
+
+        url, auth, from_addr = _twilio_endpoint()
+        to_addr = f"whatsapp:{phone}"
+        sid = settings.twilio_install_engineer_assign_content_sid
+        if sid:
+            data = {
+                "From": from_addr,
+                "To": to_addr,
+                "ContentSid": sid,
+                "ContentVariables": json.dumps(
+                    {str(i + 1): v for i, v in enumerate(params)}
+                ),
+            }
+        else:
+            data = {"From": from_addr, "To": to_addr, "Body": plain}
+
+        ok = _send_one(url, auth, data, (phone, engineer_name))
+        logger.info(
+            "Installation %s engineer assignment alert -> %s (%s): %s",
+            inst.reference, engineer.username, phone, "sent" if ok else "failed",
+        )
+
+
+def _notify_engineer_all(installation_id: int, engineer_id: int) -> None:
+    """WhatsApp + mobile push to the assigned engineer (runs in a daemon thread)."""
+    from .push import notify_installation_assigned
+
+    _notify_engineer(installation_id, engineer_id)
+    notify_installation_assigned(installation_id, engineer_id)
+
+
+def notify_engineer_assigned(installation_id: int, engineer_id: int) -> None:
+    """Notify an engineer (WhatsApp + push) that an installation was assigned to them."""
+    threading.Thread(
+        target=_notify_engineer_all,
+        args=(installation_id, engineer_id),
+        name=f"install-notify-engineer-{installation_id}",
         daemon=True,
     ).start()
 
