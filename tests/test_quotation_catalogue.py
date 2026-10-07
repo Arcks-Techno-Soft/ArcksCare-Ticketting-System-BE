@@ -99,6 +99,19 @@ def test_non_image_upload_is_422(client):
     assert r.status_code == 422
 
 
+def test_product_description_is_optional(client):
+    c, _, _ = client
+    r = c.post(f"{ROOT}/products", data={"payload": '{"name":"TEST_ No description"}'})
+    assert r.status_code == 201, r.text
+    assert r.json()["headline"] == ""
+    pid = r.json()["id"]
+    r = c.patch(f"{ROOT}/products/{pid}", data={"payload": '{"headline":"Has one now"}'})
+    assert r.status_code == 200, r.text
+    assert r.json()["headline"] == "Has one now"
+    r = c.patch(f"{ROOT}/products/{pid}", data={"payload": '{"headline":null}'})
+    assert r.status_code == 200, r.text
+    assert r.json()["headline"] == ""
+
 def test_item_image_upload_round_trips_into_a_quotation(client):
     c, _, tmp_path = client
     r = c.post(f"{ROOT}/item-images", files={"image": ("pic.png", _png(640, 480), "image/png")})

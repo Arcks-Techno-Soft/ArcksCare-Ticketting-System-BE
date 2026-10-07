@@ -60,6 +60,22 @@ def test_red_markup_renders_red_and_is_escaped():
     assert "<b>&</b>" in text  # literal, not interpreted as markup
 
 
+@pytest.mark.parametrize("headline", ["", "   ", None])
+def test_blank_product_description_is_optional_and_renders(headline):
+    from app.services.quotation_docx import render_quotation_docx
+    draft = copy.deepcopy(NAVAPAKAM_DRAFT)
+    item = dict(draft["items"][3])
+    if headline is None:
+        item.pop("headline")
+    else:
+        item["headline"] = headline
+    draft["items"] = [item]
+    from app.schemas.quotation import QuotationDraft
+    assert QuotationDraft.model_validate(draft).items[0].headline == ""
+    m = build_render_model_from_dict(draft)
+    assert render_quotation_pdf(m).startswith(b"%PDF")
+    assert render_quotation_docx(m).startswith(b"PK")
+
 def test_many_detailed_items_paginate_with_repeated_header_and_page_numbers():
     draft = copy.deepcopy(NAVAPAKAM_DRAFT)
     draft["items"] = [copy.deepcopy(draft["items"][0]) for _ in range(8)]

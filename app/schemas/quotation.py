@@ -64,8 +64,9 @@ class QuotationItemIn(BaseModel):
     brand_sub_label: Optional[str] = Field(default=None, max_length=80)
     # May contain a newline ("Mighty Series\nM95") — printed on two lines.
     model: Optional[str] = Field(default=None, max_length=120)
-    # PRODUCT NAME & DESCRIPTION cell; [[...]] prints red.
-    headline: str = Field(min_length=1, max_length=1000)
+    # PRODUCT NAME & DESCRIPTION cell; [[...]] prints red. Optional — blank
+    # is stored as "" (the column is NOT NULL) and prints an empty cell.
+    headline: str = Field(default="", max_length=1000)
     # Newline-separated; [[...]] prints red. Only used for DETAILED rows.
     spec_lines: Optional[str] = Field(default=None, max_length=4000)
     warranty_label: Optional[str] = Field(default=None, max_length=80)
@@ -87,12 +88,10 @@ class QuotationItemIn(BaseModel):
     def _optional_blank(cls, v):
         return _blank_to_none(v)
 
-    @field_validator("headline")
+    @field_validator("headline", mode="before")
     @classmethod
-    def _headline_required(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("Product name / description is required")
-        return v.strip()
+    def _headline_blank(cls, v):
+        return (v or "").strip()
 
     @field_validator("image_storage_key")
     @classmethod
@@ -271,7 +270,7 @@ class QuotationProductIn(BaseModel):
     brand: Optional[str] = Field(default=None, max_length=80)
     brand_sub_label: Optional[str] = Field(default=None, max_length=80)
     model: Optional[str] = Field(default=None, max_length=120)
-    headline: str = Field(min_length=1, max_length=1000)
+    headline: str = Field(default="", max_length=1000)
     spec_lines: Optional[str] = Field(default=None, max_length=4000)
     warranty_label: Optional[str] = Field(default=None, max_length=80)
     default_unit_price: Optional[Decimal] = Field(default=None, ge=0, le=Decimal("999999999.99"), decimal_places=2)
@@ -283,7 +282,7 @@ class QuotationProductIn(BaseModel):
     def _optional_blank(cls, v):
         return _blank_to_none(v)
 
-    @field_validator("name", "headline")
+    @field_validator("name")
     @classmethod
     def _strip_required(cls, v: str) -> str:
         v = v.strip()
@@ -291,13 +290,18 @@ class QuotationProductIn(BaseModel):
             raise ValueError("This field is required")
         return v
 
+    @field_validator("headline", mode="before")
+    @classmethod
+    def _headline_blank(cls, v):
+        return (v or "").strip()
+
 
 class QuotationProductPatch(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     brand: Optional[str] = Field(default=None, max_length=80)
     brand_sub_label: Optional[str] = Field(default=None, max_length=80)
     model: Optional[str] = Field(default=None, max_length=120)
-    headline: Optional[str] = Field(default=None, min_length=1, max_length=1000)
+    headline: Optional[str] = Field(default=None, max_length=1000)
     spec_lines: Optional[str] = Field(default=None, max_length=4000)
     warranty_label: Optional[str] = Field(default=None, max_length=80)
     default_unit_price: Optional[Decimal] = Field(default=None, ge=0, le=Decimal("999999999.99"), decimal_places=2)

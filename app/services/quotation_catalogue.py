@@ -194,6 +194,8 @@ def update_product(db: Session, p: QuotationProduct, body: QuotationProductPatch
                   "warranty_label", "default_unit_price", "sort_order", "active"):
         value = getattr(body, field)
         if field in body.model_fields_set:
+            if field == "headline" and value is None:
+                value = ""  # optional, but the column is NOT NULL
             setattr(p, field, value.strip() if isinstance(value, str) and field in ("name", "headline") else value)
     if body.default_row_style is not None:
         p.default_row_style = body.default_row_style.value
